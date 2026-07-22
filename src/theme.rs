@@ -7,13 +7,22 @@ use std::process::{Command, Stdio};
 /// Run fzf with the given items and prompt. Returns the selected index,
 /// or None if the user cancelled (Esc / Ctrl-C).
 pub fn fuzzy_select(items: &[String], prompt: &str) -> Result<Option<usize>> {
-    let input = items.join("\n");
+    // Prefix each line with its index so we can recover it from fzf's output.
+    // fzf --ansi strips ANSI codes from stdout, making string matching unreliable.
+    let input: String = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| format!("{i}\t{item}"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut child = Command::new("fzf")
         .args([
             "--ansi",
             "--reverse",
             "--height=~50%",
+            "--with-nth=2..",
+            "--delimiter=\t",
             "--prompt",
             &format!("{prompt} > "),
             "--pointer=❯",
@@ -36,7 +45,7 @@ pub fn fuzzy_select(items: &[String], prompt: &str) -> Result<Option<usize>> {
     }
 
     let selected = String::from_utf8(output.stdout)?.trim().to_string();
-    let idx = items.iter().position(|item| *item == selected);
+    let idx = selected.split('\t').next().and_then(|s| s.parse().ok());
     Ok(idx)
 }
 
