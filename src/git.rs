@@ -22,15 +22,8 @@ fn git_output_in(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn git_output(args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .output()
-        .with_context(|| format!("Failed to run: git {}", args.join(" ")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
-    }
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    let cwd = std::env::current_dir().unwrap_or_default();
+    git_output_in(&cwd, args)
 }
 
 fn git_run(args: &[&str]) -> Result<()> {
