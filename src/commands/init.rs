@@ -136,8 +136,11 @@ _copsy() {
                 switch|sw)
                     _arguments -s -S $launch_flags '1:worktree:_copsy_worktrees' && ret=0
                     ;;
+                close)
+                    _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
+                    ;;
                 remove|rm)
-                    _arguments -s -S '1:worktree:_copsy_worktrees' && ret=0
+                    _arguments -s -S '--with-branch[Also delete the local branch]' '--all[Remove all worktrees]' '1:worktree:_copsy_worktrees' && ret=0
                     ;;
                 pr)
                     _arguments -s -S $launch_flags '1:PR number or URL:' && ret=0
@@ -177,8 +180,20 @@ _copsy_bash() {
                 COMPREPLY=($(compgen -W "${branches}" -- "${cur}"))
             fi
             ;;
-        switch|sw|remove|rm)
+        switch|sw)
             if [[ ${COMP_CWORD} -eq 2 ]]; then
+                local worktrees
+                worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"
+                COMPREPLY=($(compgen -W "${worktrees}" -- "${cur}"))
+            fi
+            ;;
+        close)
+            COMPREPLY=($(compgen -W "--with-branch" -- "${cur}"))
+            ;;
+        remove|rm)
+            if [[ "${cur}" == -* ]]; then
+                COMPREPLY=($(compgen -W "--with-branch --all" -- "${cur}"))
+            else
                 local worktrees
                 worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"
                 COMPREPLY=($(compgen -W "${worktrees}" -- "${cur}"))

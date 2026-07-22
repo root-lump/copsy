@@ -119,6 +119,10 @@ pub fn remove_worktree(path: &Path) -> Result<()> {
     git_run(&["worktree", "remove", path_str])
 }
 
+pub fn delete_local_branch(branch: &str) -> Result<()> {
+    git_run(&["branch", "-d", branch])
+}
+
 pub fn get_status(path: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["status", "--short"])
