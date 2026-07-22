@@ -29,8 +29,12 @@ fn main() -> Result<()> {
         Some(Command::Switch { name, launch }) => {
             commands::switch::run(name.as_deref(), &launch)?;
         }
-        Some(Command::Remove { name }) => {
-            commands::remove::run(name.as_deref())?;
+        Some(Command::Remove {
+            name,
+            with_branch,
+            all,
+        }) => {
+            commands::remove::run(name.as_deref(), with_branch, all)?;
         }
         Some(Command::List) => {
             commands::list::run()?;
@@ -38,8 +42,8 @@ fn main() -> Result<()> {
         Some(Command::Status) => {
             commands::status::run()?;
         }
-        Some(Command::Close) => {
-            commands::close::run()?;
+        Some(Command::Close { with_branch }) => {
+            commands::close::run(with_branch)?;
         }
         Some(Command::Init { shell }) => {
             commands::init::run(&shell)?;

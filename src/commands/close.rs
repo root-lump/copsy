@@ -3,7 +3,7 @@ use crate::info;
 use crate::output;
 use anyhow::{Result, bail};
 
-pub fn run() -> Result<()> {
+pub fn run(with_branch: bool) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let main_path = git::main_worktree_path()?;
 
@@ -33,6 +33,10 @@ pub fn run() -> Result<()> {
     // cd to main before removal — the shell function processes markers in order
     output::request_cd(&main_path);
     git::remove_worktree(&wt_path)?;
+    if with_branch {
+        info!("Deleting local branch '{branch}'...");
+        git::delete_local_branch(&branch)?;
+    }
     info!("Done.");
 
     Ok(())

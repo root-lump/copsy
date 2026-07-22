@@ -36,14 +36,26 @@ pub enum Command {
     },
     /// Remove a worktree
     #[command(visible_alias = "rm")]
-    Remove { name: Option<String> },
+    Remove {
+        name: Option<String>,
+        /// Also delete the local branch
+        #[arg(long)]
+        with_branch: bool,
+        /// Remove all worktrees
+        #[arg(long)]
+        all: bool,
+    },
     /// List all worktrees
     #[command(visible_alias = "ls")]
     List,
     /// Show git status for all worktrees
     Status,
     /// Close current worktree and return to main
-    Close,
+    Close {
+        /// Also delete the local branch
+        #[arg(long)]
+        with_branch: bool,
+    },
     /// Output shell integration function
     Init {
         /// Shell type (zsh or bash)
