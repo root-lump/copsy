@@ -15,19 +15,28 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None => commands::interactive::run(&cli.launch)?,
+        None => commands::interactive::run(&cli.launch, &cli.carry)?,
         Some(Command::New {
             branch,
             from,
             launch,
+            carry,
         }) => {
-            commands::add::run(&branch, true, from.as_deref(), &launch)?;
+            commands::add::run(&branch, true, from.as_deref(), &launch, &carry)?;
         }
-        Some(Command::Add { branch, launch }) => {
-            commands::add::run(&branch, false, None, &launch)?;
+        Some(Command::Add {
+            branch,
+            launch,
+            carry,
+        }) => {
+            commands::add::run(&branch, false, None, &launch, &carry)?;
         }
-        Some(Command::Switch { name, launch }) => {
-            commands::switch::run(name.as_deref(), &launch)?;
+        Some(Command::Switch {
+            name,
+            launch,
+            carry,
+        }) => {
+            commands::switch::run(name.as_deref(), &launch, &carry)?;
         }
         Some(Command::Remove {
             name,

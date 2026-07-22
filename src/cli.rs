@@ -8,6 +8,9 @@ pub struct Cli {
 
     #[command(flatten)]
     pub launch: LaunchFlags,
+
+    #[command(flatten)]
+    pub carry: CarryFlags,
 }
 
 #[derive(Subcommand)]
@@ -20,12 +23,16 @@ pub enum Command {
         from: Option<String>,
         #[command(flatten)]
         launch: LaunchFlags,
+        #[command(flatten)]
+        carry: CarryFlags,
     },
     /// Create a worktree for an existing branch
     Add {
         branch: String,
         #[command(flatten)]
         launch: LaunchFlags,
+        #[command(flatten)]
+        carry: CarryFlags,
     },
     /// Switch to a worktree
     #[command(visible_alias = "sw")]
@@ -33,6 +40,8 @@ pub enum Command {
         name: Option<String>,
         #[command(flatten)]
         launch: LaunchFlags,
+        #[command(flatten)]
+        carry: CarryFlags,
     },
     /// Remove a worktree
     #[command(visible_alias = "rm")]
@@ -68,6 +77,29 @@ pub enum Command {
         #[command(flatten)]
         launch: LaunchFlags,
     },
+}
+
+#[derive(Args, Clone)]
+pub struct CarryFlags {
+    /// Carry uncommitted changes to the target worktree
+    #[arg(long)]
+    pub carry: bool,
+
+    /// Do not carry uncommitted changes (overrides config)
+    #[arg(long, conflicts_with = "carry")]
+    pub no_carry: bool,
+}
+
+impl CarryFlags {
+    pub fn should_carry(&self, config_default: bool) -> bool {
+        if self.carry {
+            true
+        } else if self.no_carry {
+            false
+        } else {
+            config_default
+        }
+    }
 }
 
 #[derive(Args, Clone)]

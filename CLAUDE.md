@@ -40,6 +40,8 @@ cargo test
 
 ## Conventions
 
+- When adding or changing CLI options, always update the `--help` description text in the clap `#[arg]` or `#[command]` attributes
+- When adding or changing CLI options, always update the zsh/bash completion definitions in `src/commands/init.rs` — including top-level flags and per-subcommand flags as appropriate
 - Only markers (`__COPSY_*`) may be written to stdout. All user-facing messages must use the `info!` macro (stderr)
 - Use `use` declarations for external module references instead of inline `crate::foo`
 - Interactive dialogs (`FuzzySelect`, etc.) must use `interact_opt()` so Esc cancels the dialog

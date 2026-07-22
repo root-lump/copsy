@@ -91,6 +91,8 @@ _copsy() {
         '--code[Open in VS Code]'
         '--cursor[Open in Cursor]'
         '--open=[Run custom command]:command:'
+        '(--no-carry)--carry[Carry uncommitted changes]'
+        '(--carry)--no-carry[Do not carry uncommitted changes]'
         '(-h --help)'{-h,--help}'[Print help]'
         '1:subcommand:->subcmd'
         '*::arg:->args'
@@ -126,15 +128,23 @@ _copsy() {
                 '--cursor[Open in Cursor]'
                 '--open=[Run custom command]:command:'
             )
+            local -a carry_flags
+            carry_flags=(
+                '(--no-carry)--carry[Carry uncommitted changes]'
+                '(--carry)--no-carry[Do not carry uncommitted changes]'
+            )
             case "${words[1]}" in
                 new)
-                    _arguments -s -S $launch_flags '--from=[Base branch]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
+                    _arguments -s -S $launch_flags $carry_flags '--from=[Base branch]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
                     ;;
                 add)
-                    _arguments -s -S $launch_flags '1:branch:_copsy_branches' && ret=0
+                    _arguments -s -S $launch_flags $carry_flags '1:branch:_copsy_branches' && ret=0
                     ;;
                 switch|sw)
-                    _arguments -s -S $launch_flags '1:worktree:_copsy_worktrees' && ret=0
+                    _arguments -s -S $launch_flags $carry_flags '1:worktree:_copsy_worktrees' && ret=0
+                    ;;
+                close)
+                    _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
                     ;;
                 close)
                     _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
@@ -168,20 +178,28 @@ _copsy_bash() {
     subcmds="new add switch sw remove rm list ls status close init pr"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "${subcmds}" -- "${cur}"))
+        if [[ "${cur}" == -* ]]; then
+            COMPREPLY=($(compgen -W "--carry --no-carry -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+        else
+            COMPREPLY=($(compgen -W "${subcmds}" -- "${cur}"))
+        fi
         return
     fi
 
     case "${COMP_WORDS[1]}" in
         new|add)
-            if [[ ${COMP_CWORD} -eq 2 ]]; then
+            if [[ "${cur}" == -* ]]; then
+                COMPREPLY=($(compgen -W "--carry --no-carry --from -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+            elif [[ ${COMP_CWORD} -eq 2 ]]; then
                 local branches
                 branches="$(git branch --format='%(refname:short)' 2>/dev/null)"
                 COMPREPLY=($(compgen -W "${branches}" -- "${cur}"))
             fi
             ;;
         switch|sw)
-            if [[ ${COMP_CWORD} -eq 2 ]]; then
+            if [[ "${cur}" == -* ]]; then
+                COMPREPLY=($(compgen -W "--carry --no-carry -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+            elif [[ ${COMP_CWORD} -eq 2 ]]; then
                 local worktrees
                 worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"
                 COMPREPLY=($(compgen -W "${worktrees}" -- "${cur}"))
