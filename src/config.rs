@@ -10,6 +10,7 @@ pub struct Config {
 #[derive(Deserialize, Default)]
 pub struct WorktreeConfig {
     pub base_dir: Option<String>,
+    pub carry_changes: Option<bool>,
 }
 
 impl Config {
@@ -21,6 +22,13 @@ impl Config {
         let content = std::fs::read_to_string(&path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+
+    pub fn carry_changes(&self) -> bool {
+        self.worktree
+            .as_ref()
+            .and_then(|w| w.carry_changes)
+            .unwrap_or(false)
     }
 
     pub fn base_dir(&self) -> Option<PathBuf> {
@@ -82,6 +90,24 @@ mod tests {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.worktree.is_none());
         assert!(config.base_dir().is_none());
+    }
+
+    #[test]
+    fn config_carry_changes_default_false() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.carry_changes());
+    }
+
+    #[test]
+    fn config_carry_changes_explicit() {
+        let config: Config = toml::from_str(
+            r#"
+            [worktree]
+            carry_changes = true
+            "#,
+        )
+        .unwrap();
+        assert!(config.carry_changes());
     }
 
     #[test]

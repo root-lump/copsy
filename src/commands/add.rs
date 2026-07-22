@@ -1,4 +1,4 @@
-use crate::cli::LaunchFlags;
+use crate::cli::{CarryFlags, LaunchFlags};
 use crate::config::Config;
 use crate::git;
 use crate::info;
@@ -12,9 +12,11 @@ pub fn run(
     create_branch: bool,
     from: Option<&str>,
     launch: &LaunchFlags,
+    carry: &CarryFlags,
 ) -> Result<()> {
     let root = git::repo_root()?;
     let config = Config::load()?;
+    let should_carry = carry.should_carry(config.carry_changes());
     let base_dir = config.base_dir();
     let worktree_path = git::worktree_dir_name(&root, branch, base_dir.as_deref());
 
@@ -52,8 +54,25 @@ pub fn run(
         info!("  based on '{}'", base.cyan());
     }
 
+    let current_dir = std::env::current_dir()?;
+    let mut stash_tag = None;
+    if should_carry && git::has_changes(&current_dir)? {
+        info!("Stashing uncommitted changes...");
+        stash_tag = git::stash_changes(&current_dir)?;
+    }
+
     git::add_worktree(&worktree_path, branch, create_branch, from)?;
     output::request_cd(&worktree_path);
+
+    if let Some(tag) = &stash_tag {
+        info!("Applying stashed changes...");
+        if let Err(e) = git::unstash_changes(&worktree_path, tag) {
+            info!(
+                "Warning: failed to apply changes: {e}\n  Run 'git stash pop' manually to recover."
+            );
+        }
+    }
+
     launcher::launch_tools(launch, &worktree_path);
 
     Ok(())

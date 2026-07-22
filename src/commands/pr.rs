@@ -1,4 +1,4 @@
-use crate::cli::LaunchFlags;
+use crate::cli::{CarryFlags, LaunchFlags};
 use crate::commands::add;
 use crate::git;
 use anyhow::Result;
@@ -13,7 +13,11 @@ pub fn run(target: Option<&str>, launch: &LaunchFlags) -> Result<()> {
         },
     };
 
-    add::run(&branch, false, None, launch)
+    let no_carry = CarryFlags {
+        carry: false,
+        no_carry: true,
+    };
+    add::run(&branch, false, None, launch, &no_carry)
 }
 
 fn select_pr_interactive() -> Result<Option<String>> {

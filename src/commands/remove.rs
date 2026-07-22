@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 use dialoguer::FuzzySelect;
 
-pub fn run(name: Option<&str>) -> Result<()> {
+pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
     let worktrees = git::list_worktrees()?;
     let main_path = git::main_worktree_path()?;
     let removable: Vec<_> = worktrees
@@ -15,6 +15,45 @@ pub fn run(name: Option<&str>) -> Result<()> {
 
     if removable.is_empty() {
         bail!("No removable worktrees found");
+    }
+
+    if all {
+        let current_dir = std::env::current_dir().ok();
+        let in_removable = current_dir
+            .as_ref()
+            .is_some_and(|cd| removable.iter().any(|w| cd.starts_with(&w.path)));
+
+        if in_removable {
+            output::request_cd(&main_path);
+        }
+
+        let mut errors = Vec::new();
+        for wt in &removable {
+            info!("Removing worktree '{}'...", wt.branch);
+            if let Err(e) = git::remove_worktree(&wt.path) {
+                info!("Warning: failed to remove '{}': {e}", wt.branch);
+                errors.push(wt.branch.clone());
+                continue;
+            }
+            if with_branch && !wt.branch.is_empty() {
+                info!("Deleting local branch '{}'...", wt.branch);
+                if let Err(e) = git::delete_local_branch(&wt.branch) {
+                    info!("Warning: failed to delete branch '{}': {e}", wt.branch);
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            info!("Done. Removed {} worktree(s).", removable.len());
+        } else {
+            info!(
+                "Done with errors. {} removed, {} failed.",
+                removable.len() - errors.len(),
+                errors.len()
+            );
+        }
+
+        return Ok(());
     }
 
     let target = match name {
@@ -67,8 +106,13 @@ pub fn run(name: Option<&str>) -> Result<()> {
         output::request_cd(&main_path);
     }
 
-    info!("Removing worktree '{}'...", target.branch);
+    let branch = target.branch.clone();
+    info!("Removing worktree '{branch}'...");
     git::remove_worktree(&target.path)?;
+    if with_branch && !branch.is_empty() {
+        info!("Deleting local branch '{branch}'...");
+        git::delete_local_branch(&branch)?;
+    }
     info!("Done.");
 
     Ok(())
