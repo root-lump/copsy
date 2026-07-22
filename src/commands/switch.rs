@@ -4,9 +4,8 @@ use crate::git;
 use crate::info;
 use crate::launcher;
 use crate::output;
+use crate::theme;
 use anyhow::{Result, bail};
-use console::style;
-use dialoguer::FuzzySelect;
 
 pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     let worktrees = git::list_worktrees()?;
@@ -23,26 +22,9 @@ pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Resu
             let main_path = git::main_worktree_path()?;
             let items: Vec<String> = non_bare
                 .iter()
-                .map(|w| {
-                    let label = if w.path == main_path {
-                        style("[repo]").blue().bold()
-                    } else {
-                        style("[worktree]").magenta().bold()
-                    };
-                    format!(
-                        "{} {} {}",
-                        label,
-                        style(&w.branch).bold(),
-                        style(w.path.display()).dim()
-                    )
-                })
+                .map(|w| theme::format_worktree(&w.branch, &w.path, w.path == main_path))
                 .collect();
-            let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
-                .with_prompt("Select worktree")
-                .items(&items)
-                .default(0)
-                .interact_opt()?
-            else {
+            let Some(selection) = theme::fuzzy_select(&items, "Select worktree")? else {
                 return Ok(());
             };
             non_bare[selection]

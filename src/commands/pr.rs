@@ -1,8 +1,8 @@
 use crate::cli::{CarryFlags, LaunchFlags};
 use crate::commands::add;
 use crate::git;
+use crate::theme;
 use anyhow::Result;
-use dialoguer::FuzzySelect;
 
 pub fn run(target: Option<&str>, launch: &LaunchFlags) -> Result<()> {
     let branch = match target {
@@ -31,12 +31,7 @@ fn select_pr_interactive() -> Result<Option<String>> {
         .map(|(num, title, branch)| format!("#{num} {title} ({branch})"))
         .collect();
 
-    let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
-        .with_prompt("Select a pull request")
-        .items(&items)
-        .default(0)
-        .interact_opt()?
-    else {
+    let Some(selection) = theme::fuzzy_select(&items, "Select a pull request")? else {
         return Ok(None);
     };
 

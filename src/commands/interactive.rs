@@ -5,10 +5,9 @@ use crate::git;
 use crate::info;
 use crate::launcher;
 use crate::output;
+use crate::theme;
 use anyhow::Result;
 use colored::Colorize;
-use console::style;
-use dialoguer::FuzzySelect;
 
 pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     let (worktrees, local_branches, remote_branches) =
@@ -28,18 +27,8 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
         if wt.is_bare {
             continue;
         }
-        let label = if wt.path == main_path {
-            style("[repo]").blue().bold()
-        } else {
-            style("[worktree]").magenta().bold()
-        };
         items.push((
-            format!(
-                "{} {} {}",
-                label,
-                style(&wt.branch).bold(),
-                style(wt.path.display()).dim()
-            ),
+            theme::format_worktree(&wt.branch, &wt.path, wt.path == main_path),
             ItemKind::ExistingWorktree(wt.path.clone()),
         ));
     }
@@ -47,7 +36,7 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     for branch in &local_branches {
         if !worktree_branches.contains(&branch.as_str()) {
             items.push((
-                format!("{} {}", style("[local]").white(), branch),
+                format!("{} {}", console::style("[local]").white(), branch),
                 ItemKind::NewWorktree(branch.clone()),
             ));
         }
@@ -56,7 +45,11 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     for branch in &remote_branches {
         if !worktree_branches.contains(&branch.as_str()) && !local_branches.contains(branch) {
             items.push((
-                format!("{} {}", style("[remote]").yellow(), style(branch).dim()),
+                format!(
+                    "{} {}",
+                    console::style("[remote]").yellow(),
+                    console::style(branch).dim()
+                ),
                 ItemKind::NewWorktree(branch.clone()),
             ));
         }
@@ -66,13 +59,8 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
         anyhow::bail!("No branches found");
     }
 
-    let display: Vec<&str> = items.iter().map(|(s, _)| s.as_str()).collect();
-    let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
-        .with_prompt("Select a branch")
-        .items(&display)
-        .default(0)
-        .interact_opt()?
-    else {
+    let display: Vec<String> = items.iter().map(|(s, _)| s.clone()).collect();
+    let Some(selection) = theme::fuzzy_select(&display, "Select a branch")? else {
         return Ok(());
     };
 

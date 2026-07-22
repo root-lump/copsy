@@ -1,9 +1,8 @@
 use crate::git;
 use crate::info;
 use crate::output;
+use crate::theme;
 use anyhow::{Result, bail};
-use console::style;
-use dialoguer::FuzzySelect;
 
 pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
     let worktrees = git::list_worktrees()?;
@@ -65,17 +64,12 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
                 .map(|w| {
                     format!(
                         "{} {}",
-                        style(&w.branch).bold(),
-                        style(w.path.display()).dim()
+                        console::style(&w.branch).bold(),
+                        console::style(w.path.display()).dim()
                     )
                 })
                 .collect();
-            let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
-                .with_prompt("Select worktree to remove")
-                .items(&items)
-                .default(0)
-                .interact_opt()?
-            else {
+            let Some(selection) = theme::fuzzy_select(&items, "Select worktree to remove")? else {
                 return Ok(());
             };
             removable[selection]
