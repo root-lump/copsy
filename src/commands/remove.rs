@@ -2,7 +2,7 @@ use crate::git;
 use crate::info;
 use crate::output;
 use anyhow::{Result, bail};
-use colored::Colorize;
+use console::style;
 use dialoguer::FuzzySelect;
 
 pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
@@ -72,12 +72,12 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
                 .map(|w| {
                     format!(
                         "{} {}",
-                        w.branch.white().bold(),
-                        w.path.display().to_string().dimmed()
+                        style(&w.branch).bold(),
+                        style(w.path.display()).dim()
                     )
                 })
                 .collect();
-            let Some(selection) = FuzzySelect::new()
+            let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
                 .with_prompt("Select worktree to remove")
                 .items(&items)
                 .default(0)

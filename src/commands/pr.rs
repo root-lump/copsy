@@ -21,7 +21,7 @@ pub fn run(target: Option<&str>, launch: &LaunchFlags) -> Result<()> {
 }
 
 fn select_pr_interactive() -> Result<Option<String>> {
-    let prs = git::list_prs()?;
+    let prs = crate::spinner::with_spinner("Fetching pull requests...", git::list_prs)?;
     if prs.is_empty() {
         anyhow::bail!("No open pull requests found");
     }
@@ -31,7 +31,7 @@ fn select_pr_interactive() -> Result<Option<String>> {
         .map(|(num, title, branch)| format!("#{num} {title} ({branch})"))
         .collect();
 
-    let Some(selection) = FuzzySelect::new()
+    let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
         .with_prompt("Select a pull request")
         .items(&items)
         .default(0)

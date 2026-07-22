@@ -7,12 +7,17 @@ use crate::launcher;
 use crate::output;
 use anyhow::Result;
 use colored::Colorize;
+use console::style;
 use dialoguer::FuzzySelect;
 
 pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
-    let worktrees = git::list_worktrees()?;
-    let local_branches = git::list_branches()?;
-    let remote_branches = git::list_remote_branches().unwrap_or_default();
+    let (worktrees, local_branches, remote_branches) =
+        crate::spinner::with_spinner("Loading branches...", || {
+            let wt = git::list_worktrees();
+            let lb = git::list_branches();
+            let rb = git::list_remote_branches().unwrap_or_default();
+            wt.and_then(|w| lb.map(|l| (w, l, rb)))
+        })?;
 
     let main_path = git::main_worktree_path()?;
     let worktree_branches: Vec<&str> = worktrees.iter().map(|w| w.branch.as_str()).collect();
@@ -24,16 +29,16 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
             continue;
         }
         let label = if wt.path == main_path {
-            "[repo]".blue().bold()
+            style("[repo]").blue().bold()
         } else {
-            "[worktree]".green().bold()
+            style("[worktree]").magenta().bold()
         };
         items.push((
             format!(
                 "{} {} {}",
                 label,
-                wt.branch.white().bold(),
-                wt.path.display().to_string().dimmed()
+                style(&wt.branch).bold(),
+                style(wt.path.display()).dim()
             ),
             ItemKind::ExistingWorktree(wt.path.clone()),
         ));
@@ -42,7 +47,7 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     for branch in &local_branches {
         if !worktree_branches.contains(&branch.as_str()) {
             items.push((
-                format!("{} {}", "[local]".cyan(), branch),
+                format!("{} {}", style("[local]").white(), branch),
                 ItemKind::NewWorktree(branch.clone()),
             ));
         }
@@ -51,7 +56,7 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     for branch in &remote_branches {
         if !worktree_branches.contains(&branch.as_str()) && !local_branches.contains(branch) {
             items.push((
-                format!("{} {}", "[remote]".yellow(), branch.dimmed()),
+                format!("{} {}", style("[remote]").yellow(), style(branch).dim()),
                 ItemKind::NewWorktree(branch.clone()),
             ));
         }
@@ -62,7 +67,7 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     }
 
     let display: Vec<&str> = items.iter().map(|(s, _)| s.as_str()).collect();
-    let Some(selection) = FuzzySelect::new()
+    let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
         .with_prompt("Select a branch")
         .items(&display)
         .default(0)
