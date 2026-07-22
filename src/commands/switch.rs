@@ -5,7 +5,7 @@ use crate::info;
 use crate::launcher;
 use crate::output;
 use anyhow::{Result, bail};
-use colored::Colorize;
+use console::style;
 use dialoguer::FuzzySelect;
 
 pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
@@ -32,19 +32,19 @@ pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Resu
                 .iter()
                 .map(|w| {
                     let label = if w.path == main_path {
-                        "[repo]".blue().bold()
+                        style("[repo]").blue().bold()
                     } else {
-                        "[worktree]".green().bold()
+                        style("[worktree]").magenta().bold()
                     };
                     format!(
                         "{} {} {}",
                         label,
-                        w.branch.white().bold(),
-                        w.path.display().to_string().dimmed()
+                        style(&w.branch).bold(),
+                        style(w.path.display()).dim()
                     )
                 })
                 .collect();
-            let Some(selection) = FuzzySelect::new()
+            let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
                 .with_prompt("Select worktree")
                 .items(&items)
                 .default(0)

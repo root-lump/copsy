@@ -4,6 +4,8 @@ mod config;
 mod git;
 mod launcher;
 mod output;
+mod spinner;
+mod theme;
 
 use anyhow::Result;
 use clap::Parser;
@@ -12,6 +14,8 @@ use cli::{Cli, Command};
 fn main() -> Result<()> {
     // Force color output even when stdout is piped by the shell function wrapper
     colored::control::set_override(true);
+    console::set_colors_enabled(true);
+    console::set_colors_enabled_stderr(true);
     let cli = Cli::parse();
 
     match cli.command {
