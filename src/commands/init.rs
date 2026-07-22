@@ -45,10 +45,10 @@ fn shell_function() -> &'static str {
     # LAUNCH: case-dispatched for known tools (no eval for security)
     for entry in "${launch_cmds[@]}"; do
         local tool="${entry%%	*}"
-        local path="${entry#*	}"
+        local dir="${entry#*	}"
         case "$tool" in
-            code)   code -- "$path" ;;
-            cursor) cursor -- "$path" ;;
+            code)   code -- "$dir" ;;
+            cursor) cursor -- "$dir" ;;
             claude) claude ;;
             codex)  codex ;;
         esac
