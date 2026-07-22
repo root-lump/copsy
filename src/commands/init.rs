@@ -146,9 +146,6 @@ _copsy() {
                 close)
                     _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
                     ;;
-                close)
-                    _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
-                    ;;
                 remove|rm)
                     _arguments -s -S '--with-branch[Also delete the local branch]' '--all[Remove all worktrees]' '1:worktree:_copsy_worktrees' && ret=0
                     ;;

@@ -1,4 +1,5 @@
 use crate::git;
+use crate::info;
 use anyhow::Result;
 use colored::Colorize;
 
@@ -8,7 +9,7 @@ pub fn run() -> Result<()> {
     let main_path = git::main_worktree_path()?;
 
     if worktrees.is_empty() {
-        println!("No worktrees found.");
+        info!("No worktrees found.");
         return Ok(());
     }
 
@@ -36,8 +37,8 @@ pub fn run() -> Result<()> {
         } else {
             String::new()
         };
-        println!("{marker} {branch}{label}");
-        println!("    {}", wt.path.display().to_string().dimmed());
+        info!("{marker} {branch}{label}");
+        info!("    {}", wt.path.display().to_string().dimmed());
     }
 
     Ok(())

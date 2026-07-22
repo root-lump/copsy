@@ -1,96 +1,56 @@
-use std::fmt;
+use anyhow::{Result, bail};
+use console::style;
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
 
-use console::{Style, strip_ansi_codes, style};
-use dialoguer::theme::ColorfulTheme;
-use fuzzy_matcher::FuzzyMatcher;
-use fuzzy_matcher::skim::SkimMatcherV2;
+/// Run fzf with the given items and prompt. Returns the selected index,
+/// or None if the user cancelled (Esc / Ctrl-C).
+pub fn fuzzy_select(items: &[String], prompt: &str) -> Result<Option<usize>> {
+    let input = items.join("\n");
 
-// ColorfulTheme renders active items char-by-char with active_item_style,
-// which destroys ANSI codes embedded in items. This theme strips ANSI from
-// active items first, then applies a uniform green+bold style.
-pub struct CopsyTheme {
-    inner: ColorfulTheme,
-    active_style: Style,
+    let mut child = Command::new("fzf")
+        .args([
+            "--ansi",
+            "--reverse",
+            "--height=~50%",
+            "--prompt",
+            &format!("{prompt} > "),
+            "--pointer=❯",
+            "--color=pointer:green,prompt:bold,fg+:green:bold,bg+:236,hl:green,hl+:green:bold",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    child.stdin.take().unwrap().write_all(input.as_bytes())?;
+
+    let output = child.wait_with_output()?;
+
+    match output.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(None),   // no match
+        Some(130) => return Ok(None), // cancelled
+        _ => bail!("fzf exited with status {}", output.status),
+    }
+
+    let selected = String::from_utf8(output.stdout)?.trim().to_string();
+    let idx = items.iter().position(|item| *item == selected);
+    Ok(idx)
 }
 
-impl CopsyTheme {
-    pub fn new() -> Self {
-        Self {
-            inner: ColorfulTheme {
-                active_item_prefix: style("❯".to_string()).for_stderr().green(),
-                ..ColorfulTheme::default()
-            },
-            active_style: Style::new().for_stderr().green().bold(),
-        }
-    }
-}
-
-impl dialoguer::theme::Theme for CopsyTheme {
-    fn format_fuzzy_select_prompt_item(
-        &self,
-        f: &mut dyn fmt::Write,
-        text: &str,
-        active: bool,
-        highlight_matches: bool,
-        matcher: &SkimMatcherV2,
-        search_term: &str,
-    ) -> fmt::Result {
-        write!(
-            f,
-            "{} ",
-            if active {
-                &self.inner.active_item_prefix
-            } else {
-                &self.inner.inactive_item_prefix
-            }
-        )?;
-
-        if active {
-            // Strip ANSI so active_style doesn't collide with embedded colors
-            let plain = strip_ansi_codes(text);
-            if highlight_matches
-                && let Some((_score, indices)) = matcher.fuzzy_indices(&plain, search_term)
-            {
-                for (idx, c) in plain.chars().enumerate() {
-                    if indices.contains(&idx) {
-                        write!(
-                            f,
-                            "{}",
-                            self.active_style
-                                .apply_to(self.inner.fuzzy_match_highlight_style.apply_to(c))
-                        )?;
-                    } else {
-                        write!(f, "{}", self.active_style.apply_to(c))?;
-                    }
-                }
-                return Ok(());
-            }
-            write!(f, "{}", self.active_style.apply_to(plain))
-        // Inactive: preserve original ANSI colors from items
-        } else if highlight_matches
-            && let Some((_score, indices)) = matcher.fuzzy_indices(text, search_term)
-        {
-            for (idx, c) in text.chars().enumerate() {
-                if indices.contains(&idx) {
-                    write!(f, "{}", self.inner.fuzzy_match_highlight_style.apply_to(c))?;
-                } else {
-                    write!(f, "{}", c)?;
-                }
-            }
-            Ok(())
-        } else {
-            write!(f, "{}", text)
-        }
-    }
-
-    fn format_fuzzy_select_prompt(
-        &self,
-        f: &mut dyn fmt::Write,
-        prompt: &str,
-        search_term: &str,
-        bytes_pos: usize,
-    ) -> fmt::Result {
-        self.inner
-            .format_fuzzy_select_prompt(f, prompt, search_term, bytes_pos)
-    }
+/// Format a worktree entry for display in fuzzy select lists.
+pub fn format_worktree(branch: &str, path: &Path, is_main: bool) -> String {
+    let label = if is_main {
+        style("[repo]").blue().bold()
+    } else {
+        style("[worktree]").magenta().bold()
+    };
+    format!(
+        "{} {} {}",
+        label,
+        style(branch).bold(),
+        style(path.display()).dim()
+    )
 }

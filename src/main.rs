@@ -12,7 +12,9 @@ use clap::Parser;
 use cli::{Cli, Command};
 
 fn main() -> Result<()> {
-    // Force color output even when stdout is piped by the shell function wrapper
+    // The shell function wraps `command copsy` and captures stdout, which makes
+    // both `colored` and `console` think they're not on a terminal. Override
+    // before clap parsing so --help and all output stay colored.
     colored::control::set_override(true);
     console::set_colors_enabled(true);
     console::set_colors_enabled_stderr(true);

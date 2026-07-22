@@ -4,9 +4,8 @@ use crate::git;
 use crate::info;
 use crate::launcher;
 use crate::output;
+use crate::theme;
 use anyhow::{Result, bail};
-use console::style;
-use dialoguer::FuzzySelect;
 
 pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     let worktrees = git::list_worktrees()?;
@@ -17,39 +16,15 @@ pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Resu
     }
 
     let target = match name {
-        Some(name) => non_bare
-            .iter()
-            .find(|w| {
-                w.branch == name
-                    || w.path
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy() == name)
-            })
+        Some(name) => git::find_worktree(&non_bare, name)
             .ok_or_else(|| anyhow::anyhow!("Worktree '{name}' not found"))?,
         None => {
             let main_path = git::main_worktree_path()?;
             let items: Vec<String> = non_bare
                 .iter()
-                .map(|w| {
-                    let label = if w.path == main_path {
-                        style("[repo]").blue().bold()
-                    } else {
-                        style("[worktree]").magenta().bold()
-                    };
-                    format!(
-                        "{} {} {}",
-                        label,
-                        style(&w.branch).bold(),
-                        style(w.path.display()).dim()
-                    )
-                })
+                .map(|w| theme::format_worktree(&w.branch, &w.path, w.path == main_path))
                 .collect();
-            let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
-                .with_prompt("Select worktree")
-                .items(&items)
-                .default(0)
-                .interact_opt()?
-            else {
+            let Some(selection) = theme::fuzzy_select(&items, "Select worktree")? else {
                 return Ok(());
             };
             non_bare[selection]
@@ -59,24 +34,12 @@ pub fn run(name: Option<&str>, launch: &LaunchFlags, carry: &CarryFlags) -> Resu
     let config = Config::load()?;
     let should_carry = carry.should_carry(config.carry_changes());
     let current_dir = std::env::current_dir()?;
-
-    let mut stash_tag = None;
-    if should_carry && git::has_changes(&current_dir)? {
-        info!("Stashing uncommitted changes...");
-        stash_tag = git::stash_changes(&current_dir)?;
-    }
+    let stash_tag = git::carry_stash(&current_dir, should_carry)?;
 
     info!("Switching to worktree '{}'", target.branch);
     output::request_cd(&target.path);
 
-    if let Some(tag) = &stash_tag {
-        info!("Applying stashed changes...");
-        if let Err(e) = git::unstash_changes(&target.path, tag) {
-            info!(
-                "Warning: failed to apply changes: {e}\n  Run 'git stash pop' manually to recover."
-            );
-        }
-    }
+    git::carry_unstash(&target.path, &stash_tag);
 
     launcher::launch_tools(launch, &target.path);
 

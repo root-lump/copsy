@@ -5,10 +5,9 @@ use crate::git;
 use crate::info;
 use crate::launcher;
 use crate::output;
+use crate::theme;
 use anyhow::Result;
 use colored::Colorize;
-use console::style;
-use dialoguer::FuzzySelect;
 
 pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     let (worktrees, local_branches, remote_branches) =
@@ -28,18 +27,8 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
         if wt.is_bare {
             continue;
         }
-        let label = if wt.path == main_path {
-            style("[repo]").blue().bold()
-        } else {
-            style("[worktree]").magenta().bold()
-        };
         items.push((
-            format!(
-                "{} {} {}",
-                label,
-                style(&wt.branch).bold(),
-                style(wt.path.display()).dim()
-            ),
+            theme::format_worktree(&wt.branch, &wt.path, wt.path == main_path),
             ItemKind::ExistingWorktree(wt.path.clone()),
         ));
     }
@@ -47,7 +36,7 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     for branch in &local_branches {
         if !worktree_branches.contains(&branch.as_str()) {
             items.push((
-                format!("{} {}", style("[local]").white(), branch),
+                format!("{} {}", console::style("[local]").white(), branch),
                 ItemKind::NewWorktree(branch.clone()),
             ));
         }
@@ -56,7 +45,11 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     for branch in &remote_branches {
         if !worktree_branches.contains(&branch.as_str()) && !local_branches.contains(branch) {
             items.push((
-                format!("{} {}", style("[remote]").yellow(), style(branch).dim()),
+                format!(
+                    "{} {}",
+                    console::style("[remote]").yellow(),
+                    console::style(branch).dim()
+                ),
                 ItemKind::NewWorktree(branch.clone()),
             ));
         }
@@ -66,13 +59,8 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
         anyhow::bail!("No branches found");
     }
 
-    let display: Vec<&str> = items.iter().map(|(s, _)| s.as_str()).collect();
-    let Some(selection) = FuzzySelect::with_theme(&crate::theme::CopsyTheme::new())
-        .with_prompt("Select a branch")
-        .items(&display)
-        .default(0)
-        .interact_opt()?
-    else {
+    let display: Vec<String> = items.iter().map(|(s, _)| s.clone()).collect();
+    let Some(selection) = theme::fuzzy_select(&display, "Select a branch")? else {
         return Ok(());
     };
 
@@ -81,25 +69,12 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
             let config = Config::load()?;
             let should_carry = carry.should_carry(config.carry_changes());
             let current_dir = std::env::current_dir()?;
-
-            let mut stash_tag = None;
-            if should_carry && git::has_changes(&current_dir)? {
-                info!("Stashing uncommitted changes...");
-                stash_tag = git::stash_changes(&current_dir)?;
-            }
+            let stash_tag = git::carry_stash(&current_dir, should_carry)?;
 
             info!("{}", "Switching to worktree".green());
             output::request_cd(path);
 
-            if let Some(tag) = &stash_tag {
-                info!("Applying stashed changes...");
-                if let Err(e) = git::unstash_changes(path, tag) {
-                    info!(
-                        "Warning: failed to apply changes: {e}\n  Run 'git stash pop' manually to recover."
-                    );
-                }
-            }
-
+            git::carry_unstash(path, &stash_tag);
             launcher::launch_tools(launch, path);
         }
         ItemKind::NewWorktree(branch) => {
