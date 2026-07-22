@@ -1,4 +1,5 @@
 use crate::git;
+use crate::info;
 use anyhow::Result;
 use colored::Colorize;
 
@@ -6,7 +7,7 @@ pub fn run() -> Result<()> {
     let worktrees = git::list_worktrees()?;
 
     if worktrees.is_empty() {
-        println!("No worktrees found.");
+        info!("No worktrees found.");
         return Ok(());
     }
 
@@ -28,16 +29,16 @@ pub fn run() -> Result<()> {
             format!("{file_count} changed").yellow().bold().to_string()
         };
 
-        println!("  {branch_display}  [{status_display}]");
-        println!("    {}", wt.path.display().to_string().dimmed());
+        info!("  {branch_display}  [{status_display}]");
+        info!("    {}", wt.path.display().to_string().dimmed());
 
         if file_count > 0 {
             for line in status.lines().take(5) {
                 let colored_line = colorize_status_line(line);
-                println!("      {colored_line}");
+                info!("      {colored_line}");
             }
             if file_count > 5 {
-                println!(
+                info!(
                     "      {}",
                     format!("... and {} more", file_count - 5).dimmed()
                 );
@@ -48,6 +49,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+// `git status --short` uses a fixed 2-char prefix (XY) for status indicators.
 fn colorize_status_line(line: &str) -> String {
     if line.len() < 2 {
         return line.to_string();

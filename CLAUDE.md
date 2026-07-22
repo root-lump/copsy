@@ -40,6 +40,7 @@ cargo test
 
 ## Conventions
 
+- Code comments explain **why**, not what. Add a comment only when the reason would surprise a reader: a hidden constraint, a workaround for a specific tool/library behavior, or an invariant the code alone doesn't convey. Do not reference tasks, PRs, or callers — those belong in commit messages
 - When adding or changing CLI options, always update the `--help` description text in the clap `#[arg]` or `#[command]` attributes
 - When adding or changing CLI options, always update the zsh/bash completion definitions in `src/commands/init.rs` — including top-level flags and per-subcommand flags as appropriate
 - Only markers (`__COPSY_*`) may be written to stdout. All user-facing messages must use the `info!` macro (stderr)

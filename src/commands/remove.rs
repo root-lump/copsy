@@ -57,14 +57,7 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
     }
 
     let target = match name {
-        Some(name) => removable
-            .iter()
-            .find(|w| {
-                w.branch == name
-                    || w.path
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy() == name)
-            })
+        Some(name) => git::find_worktree(&removable, name)
             .ok_or_else(|| anyhow::anyhow!("Worktree '{name}' not found"))?,
         None => {
             let items: Vec<String> = removable

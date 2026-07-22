@@ -81,25 +81,12 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
             let config = Config::load()?;
             let should_carry = carry.should_carry(config.carry_changes());
             let current_dir = std::env::current_dir()?;
-
-            let mut stash_tag = None;
-            if should_carry && git::has_changes(&current_dir)? {
-                info!("Stashing uncommitted changes...");
-                stash_tag = git::stash_changes(&current_dir)?;
-            }
+            let stash_tag = git::carry_stash(&current_dir, should_carry)?;
 
             info!("{}", "Switching to worktree".green());
             output::request_cd(path);
 
-            if let Some(tag) = &stash_tag {
-                info!("Applying stashed changes...");
-                if let Err(e) = git::unstash_changes(path, tag) {
-                    info!(
-                        "Warning: failed to apply changes: {e}\n  Run 'git stash pop' manually to recover."
-                    );
-                }
-            }
-
+            git::carry_unstash(path, &stash_tag);
             launcher::launch_tools(launch, path);
         }
         ItemKind::NewWorktree(branch) => {

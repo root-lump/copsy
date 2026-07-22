@@ -142,6 +142,8 @@ pub fn has_changes(path: &Path) -> Result<bool> {
 }
 
 pub fn stash_changes(path: &Path) -> Result<Option<String>> {
+    // Unique tag lets us find the exact stash entry later, even if the user
+    // creates other stashes between stash and pop.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -150,6 +152,8 @@ pub fn stash_changes(path: &Path) -> Result<Option<String>> {
     let before = git_output_in(path, &["stash", "list"])?;
     git_output_in(path, &["stash", "push", "--include-untracked", "-m", &tag])?;
     let after = git_output_in(path, &["stash", "list"])?;
+    // `git stash push` is a no-op when the working tree is clean; detect that
+    // by comparing the stash list before and after.
     if before == after {
         Ok(None)
     } else {
@@ -171,6 +175,48 @@ pub fn unstash_changes(path: &Path, tag: &str) -> Result<()> {
         }
     }
     bail!("Stash entry '{tag}' not found")
+}
+
+/// Stash uncommitted changes in `source` if carry is enabled and changes exist.
+/// Returns the stash tag if changes were stashed.
+pub fn carry_stash(source: &Path, should_carry: bool) -> Result<Option<String>> {
+    if should_carry && has_changes(source)? {
+        crate::info!("Stashing uncommitted changes...");
+        stash_changes(source)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Pop a previously stashed carry entry into `target`.
+/// Prints a warning instead of failing if the unstash fails.
+pub fn carry_unstash(target: &Path, stash_tag: &Option<String>) {
+    if let Some(tag) = stash_tag {
+        crate::info!("Applying stashed changes...");
+        if let Err(e) = unstash_changes(target, tag) {
+            crate::info!(
+                "Warning: failed to apply changes: {e}\n  Run 'git stash pop' manually to recover."
+            );
+        }
+    }
+}
+
+/// Find a worktree by branch name or directory basename.
+pub fn find_worktree<'a, W: AsRef<WorktreeInfo>>(worktrees: &'a [W], name: &str) -> Option<&'a W> {
+    worktrees.iter().find(|w| {
+        let wt = w.as_ref();
+        wt.branch == name
+            || wt
+                .path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy() == name)
+    })
+}
+
+impl AsRef<WorktreeInfo> for WorktreeInfo {
+    fn as_ref(&self) -> &WorktreeInfo {
+        self
+    }
 }
 
 pub fn get_status(path: &Path) -> Result<String> {

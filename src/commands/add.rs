@@ -55,23 +55,12 @@ pub fn run(
     }
 
     let current_dir = std::env::current_dir()?;
-    let mut stash_tag = None;
-    if should_carry && git::has_changes(&current_dir)? {
-        info!("Stashing uncommitted changes...");
-        stash_tag = git::stash_changes(&current_dir)?;
-    }
+    let stash_tag = git::carry_stash(&current_dir, should_carry)?;
 
     git::add_worktree(&worktree_path, branch, create_branch, from)?;
     output::request_cd(&worktree_path);
 
-    if let Some(tag) = &stash_tag {
-        info!("Applying stashed changes...");
-        if let Err(e) = git::unstash_changes(&worktree_path, tag) {
-            info!(
-                "Warning: failed to apply changes: {e}\n  Run 'git stash pop' manually to recover."
-            );
-        }
-    }
+    git::carry_unstash(&worktree_path, &stash_tag);
 
     launcher::launch_tools(launch, &worktree_path);
 
