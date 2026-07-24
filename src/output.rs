@@ -7,6 +7,7 @@ use std::path::Path;
 const CD_MARKER: &str = "__COPSY_CD__";
 const LAUNCH_MARKER: &str = "__COPSY_LAUNCH__";
 const OPEN_MARKER: &str = "__COPSY_OPEN__";
+const SETUP_MARKER: &str = "__COPSY_SETUP__";
 
 pub fn request_cd(path: &Path) {
     println!("{CD_MARKER}{}", path.display());
@@ -20,6 +21,10 @@ pub fn request_launch(tool: &str, path: &Path) {
 // OPEN markers use eval in the shell function — only for user-provided --open commands
 pub fn request_open(cmd: &str) {
     println!("{OPEN_MARKER}{cmd}");
+}
+
+pub fn request_setup(path: &Path) {
+    println!("{SETUP_MARKER}{}", path.display());
 }
 
 #[macro_export]

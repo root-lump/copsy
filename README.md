@@ -19,6 +19,7 @@
 - **Tab completion** — zsh/bash completion for subcommands, branch names, and worktree names
 - **Color-coded output** — distinguish repos, worktrees, local branches, and remote branches at a glance
 - **Configurable worktree directory** — choose where worktrees are created
+- **Repository setup** — copy ignored files and run a command for new worktrees
 
 ## Requirements
 
@@ -74,6 +75,8 @@ Press **Esc** to cancel.
 | `copsy status` | Show `git status --short` for every worktree |
 | `copsy close` | Close the current worktree and return to the main worktree |
 | `copsy pr [target]` | Checkout a PR as a worktree (interactive if target omitted) |
+| `copsy config init` | Create repository setup configuration interactively |
+| `copsy setup` | Run repository setup for the current worktree |
 | `copsy init <shell>` | Print shell integration script (`zsh` or `bash`) |
 
 ### PR checkout
@@ -121,6 +124,44 @@ base_dir = "~/worktrees"
 ```
 
 Without `base_dir`, worktrees are created alongside the repository directory, named `<repo>-<branch>`.
+
+### Repository setup
+
+Run `copsy config init` to create machine-local repository configuration at
+`<git-common-dir>/copsy.toml`. The initializer can override the global worktree
+directory, select ignored files to copy from the main worktree, and choose
+which worktree commands run setup automatically.
+
+```toml
+# [worktree]
+# base_dir = "~/worktrees"
+[setup]
+auto = ["new"]
+# command = ["npm", "install"]
+copy_from_main = [
+  ".env",
+  ".env.local",
+]
+```
+
+Repository `base_dir` overrides the global value. Unset repository values
+inherit the global configuration.
+
+Setup copies configured files and directories before running `command`.
+Existing destinations are never overwritten. Run setup explicitly with
+`copsy setup` or `--setup`; use `--no-setup` to override `auto`.
+
+```sh
+copsy new feature --setup
+copsy add existing --no-setup
+copsy setup
+```
+
+Setup commands can execute arbitrary code. Automatic setup for `copsy pr`
+should only be enabled for repositories and pull requests you trust.
+
+After upgrading, restart the shell or re-evaluate `copsy init zsh`/`copsy init
+bash` so the shell wrapper recognizes setup requests.
 
 ## Worktree naming
 

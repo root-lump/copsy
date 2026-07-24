@@ -9,7 +9,7 @@ mod theme;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{Cli, Command, ConfigCommand};
 
 fn main() -> Result<()> {
     // The shell function wraps `command copsy` and captures stdout, which makes
@@ -21,28 +21,45 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None => commands::interactive::run(&cli.launch, &cli.carry)?,
+        None => commands::interactive::run(&cli.launch, &cli.carry, &cli.setup)?,
         Some(Command::New {
             branch,
             from,
             launch,
             carry,
+            setup,
         }) => {
-            commands::add::run(&branch, true, from.as_deref(), &launch, &carry)?;
+            commands::add::run(
+                &branch,
+                commands::add::CreationKind::New,
+                from.as_deref(),
+                &launch,
+                &carry,
+                &setup,
+            )?;
         }
         Some(Command::Add {
             branch,
             launch,
             carry,
+            setup,
         }) => {
-            commands::add::run(&branch, false, None, &launch, &carry)?;
+            commands::add::run(
+                &branch,
+                commands::add::CreationKind::Add,
+                None,
+                &launch,
+                &carry,
+                &setup,
+            )?;
         }
         Some(Command::Switch {
             name,
             launch,
             carry,
+            setup,
         }) => {
-            commands::switch::run(name.as_deref(), &launch, &carry)?;
+            commands::switch::run(name.as_deref(), &launch, &carry, &setup)?;
         }
         Some(Command::Remove {
             name,
@@ -63,8 +80,20 @@ fn main() -> Result<()> {
         Some(Command::Init { shell }) => {
             commands::init::run(&shell)?;
         }
-        Some(Command::Pr { target, launch }) => {
-            commands::pr::run(target.as_deref(), &launch)?;
+        Some(Command::Pr {
+            target,
+            launch,
+            setup,
+        }) => {
+            commands::pr::run(target.as_deref(), &launch, &setup)?;
+        }
+        Some(Command::Config {
+            command: ConfigCommand::Init,
+        }) => {
+            commands::config::run_init()?;
+        }
+        Some(Command::Setup { execute }) => {
+            commands::setup::run(execute)?;
         }
     }
 

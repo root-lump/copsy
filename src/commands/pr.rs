@@ -1,10 +1,10 @@
-use crate::cli::{CarryFlags, LaunchFlags};
-use crate::commands::add;
+use crate::cli::{CarryFlags, LaunchFlags, SetupFlags};
+use crate::commands::add::{self, CreationKind};
 use crate::git;
 use crate::theme;
 use anyhow::Result;
 
-pub fn run(target: Option<&str>, launch: &LaunchFlags) -> Result<()> {
+pub fn run(target: Option<&str>, launch: &LaunchFlags, setup: &SetupFlags) -> Result<()> {
     let branch = match target {
         Some(t) => git::fetch_pr(t)?,
         None => match select_pr_interactive()? {
@@ -17,7 +17,7 @@ pub fn run(target: Option<&str>, launch: &LaunchFlags) -> Result<()> {
         carry: false,
         no_carry: true,
     };
-    add::run(&branch, false, None, launch, &no_carry)
+    add::run(&branch, CreationKind::Pr, None, launch, &no_carry, setup)
 }
 
 fn select_pr_interactive() -> Result<Option<String>> {

@@ -1,5 +1,5 @@
-use crate::cli::{CarryFlags, LaunchFlags};
-use crate::config::Config;
+use crate::cli::{CarryFlags, LaunchFlags, SetupFlags};
+use crate::config::{Config, SetupTrigger};
 use crate::git;
 use crate::info;
 use crate::launcher;
@@ -9,10 +9,11 @@ use colored::Colorize;
 
 pub fn run(
     branch: &str,
-    create_branch: bool,
+    kind: CreationKind,
     from: Option<&str>,
     launch: &LaunchFlags,
     carry: &CarryFlags,
+    setup: &SetupFlags,
 ) -> Result<()> {
     let root = git::repo_root()?;
     let config = Config::load()?;
@@ -24,6 +25,9 @@ pub fn run(
         let worktrees = git::list_worktrees()?;
         if worktrees.iter().any(|w| w.path == worktree_path) {
             info!("Worktree already exists at {}", worktree_path.display());
+            if setup.should_setup(false, false) {
+                output::request_setup(&worktree_path);
+            }
             output::request_cd(&worktree_path);
             launcher::launch_tools(launch, &worktree_path);
             return Ok(());
@@ -40,7 +44,7 @@ pub fn run(
         std::fs::create_dir_all(dir)?;
     }
 
-    let verb = if create_branch {
+    let verb = if kind == CreationKind::New {
         "Creating new branch"
     } else {
         "Adding"
@@ -57,12 +61,32 @@ pub fn run(
     let current_dir = std::env::current_dir()?;
     let stash_tag = git::carry_stash(&current_dir, should_carry)?;
 
-    git::add_worktree(&worktree_path, branch, create_branch, from)?;
-    output::request_cd(&worktree_path);
+    git::add_worktree(&worktree_path, branch, kind == CreationKind::New, from)?;
 
     git::carry_unstash(&worktree_path, &stash_tag);
 
+    if setup.should_setup(config.auto_setup(kind.trigger()), true) {
+        output::request_setup(&worktree_path);
+    }
+    output::request_cd(&worktree_path);
     launcher::launch_tools(launch, &worktree_path);
 
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CreationKind {
+    New,
+    Add,
+    Pr,
+}
+
+impl CreationKind {
+    fn trigger(self) -> SetupTrigger {
+        match self {
+            Self::New => SetupTrigger::New,
+            Self::Add => SetupTrigger::Add,
+            Self::Pr => SetupTrigger::Pr,
+        }
+    }
 }
