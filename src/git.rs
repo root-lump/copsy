@@ -37,6 +37,13 @@ fn git_run(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn git_succeeds(args: &[&str]) -> bool {
+    Command::new("git")
+        .args(args)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 pub fn repo_root() -> Result<PathBuf> {
     git_output(&["rev-parse", "--show-toplevel"]).map(PathBuf::from)
 }
@@ -235,7 +242,22 @@ pub fn list_remote_branches() -> Result<Vec<String>> {
         .collect())
 }
 
+fn check_gh_default_repo() -> Result<()> {
+    let remotes = git_output(&["remote"])?;
+    if remotes.lines().count() <= 1 {
+        return Ok(());
+    }
+    if !git_succeeds(&["config", "--get-regexp", r"^remote\..*\.gh-resolved$"]) {
+        bail!(
+            "Multiple remotes found but no default repository has been set for gh.\n  \
+             Run 'gh repo set-default' to select one."
+        );
+    }
+    Ok(())
+}
+
 pub fn fetch_pr(target: &str) -> Result<String> {
+    check_gh_default_repo()?;
     let pr_number = extract_pr_number(target)?;
 
     let output = Command::new("gh")
@@ -259,19 +281,32 @@ pub fn fetch_pr(target: &str) -> Result<String> {
         bail!("Could not determine branch for PR {pr_number}");
     }
 
-    // Try fast-forward fetch first; fall back to tracking-only fetch if the branch
-    // already exists locally with divergent history
-    if Command::new("git")
-        .args(["fetch", "origin", &format!("{branch}:{branch}")])
-        .status()
-        .is_ok_and(|s| !s.success())
-    {
-        let _ = Command::new("git")
-            .args(["fetch", "origin", &branch])
-            .status();
+    fetch_pr_branch(&pr_number, &branch)?;
+    Ok(branch)
+}
+
+pub fn fetch_pr_branch(pr_number: &str, branch: &str) -> Result<()> {
+    // Try fetching from origin first — this sets up origin/<branch> so
+    // `git worktree add` can auto-create a tracking branch.
+    if !git_succeeds(&["fetch", "origin", branch]) {
+        let pr_ref = format!("pull/{pr_number}/head:{branch}");
+        git_run(&["fetch", "origin", &pr_ref])?;
     }
 
-    Ok(branch)
+    // Set upstream tracking only when origin/<branch> exists (same-repo PRs)
+    // and the local branch already exists (otherwise worktree add handles it).
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let local_ref = format!("refs/heads/{branch}");
+    if git_succeeds(&["rev-parse", "--verify", &remote_ref])
+        && git_succeeds(&["rev-parse", "--verify", &local_ref])
+    {
+        let upstream = format!("origin/{branch}");
+        let _ = Command::new("git")
+            .args(["branch", "--set-upstream-to", &upstream, branch])
+            .output();
+    }
+
+    Ok(())
 }
 
 pub(crate) fn extract_pr_number(target: &str) -> Result<String> {
@@ -288,6 +323,7 @@ pub(crate) fn extract_pr_number(target: &str) -> Result<String> {
 }
 
 pub fn list_prs() -> Result<Vec<(String, String, String)>> {
+    check_gh_default_repo()?;
     let output = Command::new("gh")
         .args([
             "pr",
