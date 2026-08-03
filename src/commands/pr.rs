@@ -35,6 +35,7 @@ fn select_pr_interactive() -> Result<Option<String>> {
         return Ok(None);
     };
 
-    let (num, _, _) = &prs[selection];
-    git::fetch_pr(num).map(Some)
+    let (num, _, branch) = &prs[selection];
+    git::fetch_pr_branch(num, branch)?;
+    Ok(Some(branch.clone()))
 }
