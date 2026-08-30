@@ -76,7 +76,8 @@ Press **Esc** to cancel.
 | `copsy status` | Show `git status --short` for every worktree |
 | `copsy close` | Close the current worktree and return to the main worktree |
 | `copsy pr [target]` | Checkout a PR as a worktree (interactive if target omitted) |
-| `copsy config init` | Create repository setup configuration interactively |
+| `copsy config repo` | Create repository configuration interactively |
+| `copsy config global` | Create global configuration interactively |
 | `copsy setup` | Run repository setup for the current worktree |
 | `copsy init <shell>` | Print shell integration script (`zsh` or `bash`) |
 
@@ -115,20 +116,27 @@ copsy pr 42 --cursor                # Checkout PR #42 + open Cursor
 
 ## Configuration
 
-Config file: `~/.config/copsy/config.toml` (respects `$XDG_CONFIG_HOME`)
+Run `copsy config global` to create the global configuration interactively at
+`~/.config/copsy/config.toml` (respects `$XDG_CONFIG_HOME`). It configures the
+default worktree directory and whether uncommitted changes are carried by
+default.
 
 ```toml
 [worktree]
 # Directory where worktrees are created (default: parent of repo root)
 # Supports ~ expansion
 base_dir = "~/worktrees"
+# Carry uncommitted changes when switching worktrees
+carry_changes = true
 ```
 
 Without `base_dir`, worktrees are created alongside the repository directory, named `<repo>-<branch>`.
 
+The command is create-only and will not overwrite an existing configuration.
+
 ### Repository setup
 
-Run `copsy config init` to create machine-local repository configuration at
+Run `copsy config repo` to create machine-local repository configuration at
 `<git-common-dir>/copsy.toml`. The initializer can override the global worktree
 directory, select ignored files to copy from the main worktree, and choose
 which worktree commands run setup automatically.
@@ -147,6 +155,7 @@ copy_from_main = [
 
 Repository `base_dir` overrides the global value. Unset repository values
 inherit the global configuration.
+The command is create-only and will not overwrite an existing configuration.
 
 `auto` accepts `new`, `add`, and `pr`. Omit it or leave setup unconfigured to
 keep the default no-setup behavior.

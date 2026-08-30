@@ -206,7 +206,7 @@ _copsy() {
                     _arguments '1:shell:(zsh bash)' && ret=0
                     ;;
                 config)
-                    _arguments '1:config command:(init)' && ret=0
+                    _arguments '1:config command:(repo global)' && ret=0
                     ;;
                 setup)
                     _arguments && ret=0
@@ -314,7 +314,7 @@ _copsy_bash() {
             ;;
         config)
             if [[ ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
-                COMPREPLY=($(compgen -W "init" -- "${cur}"))
+                COMPREPLY=($(compgen -W "repo global" -- "${cur}"))
             fi
             ;;
     esac
@@ -344,6 +344,15 @@ mod tests {
             assert!(completion.contains("config"));
             assert!(completion.contains("setup"));
             assert!(completion.contains("--no-setup"));
+        }
+    }
+
+    #[test]
+    fn completions_offer_config_scopes_without_init() {
+        for completion in [zsh_completion(), bash_completion()] {
+            assert!(completion.contains("repo global"));
+            assert!(!completion.contains("config command:(init)"));
+            assert!(!completion.contains("compgen -W \"init\""));
         }
     }
 

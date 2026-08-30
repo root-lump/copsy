@@ -69,7 +69,7 @@ pub enum Command {
         #[command(flatten)]
         transition: PrTransitionFlags,
     },
-    /// Manage repository configuration
+    /// Manage copsy configuration
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -85,7 +85,9 @@ pub enum Command {
 #[derive(Subcommand)]
 pub enum ConfigCommand {
     /// Create repository configuration interactively
-    Init,
+    Repo,
+    /// Create global configuration interactively
+    Global,
 }
 
 #[derive(Args, Clone, Default)]
@@ -312,14 +314,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_config_init() {
-        let cli = Cli::try_parse_from(["copsy", "config", "init"]).unwrap();
+    fn parses_config_scopes_and_rejects_init() {
+        let repo = Cli::try_parse_from(["copsy", "config", "repo"]).unwrap();
         assert!(matches!(
-            cli.command,
+            repo.command,
             Some(Command::Config {
-                command: ConfigCommand::Init
+                command: ConfigCommand::Repo
             })
         ));
+        let global = Cli::try_parse_from(["copsy", "config", "global"]).unwrap();
+        assert!(matches!(
+            global.command,
+            Some(Command::Config {
+                command: ConfigCommand::Global
+            })
+        ));
+        assert!(Cli::try_parse_from(["copsy", "config", "init"]).is_err());
     }
 
     #[test]

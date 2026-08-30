@@ -74,10 +74,16 @@ fn main() -> Result<()> {
             commands::pr::run(target.as_deref(), &root_transition.resolve_pr(&transition)?)?
         }
         Some(Command::Config {
-            command: ConfigCommand::Init,
+            command: ConfigCommand::Repo,
         }) => {
             root_transition.ensure_unused("config")?;
-            commands::config::run_init()?;
+            commands::config::run_repo()?;
+        }
+        Some(Command::Config {
+            command: ConfigCommand::Global,
+        }) => {
+            root_transition.ensure_unused("config")?;
+            commands::config::run_global()?;
         }
         Some(Command::Setup { execute }) => {
             root_transition.ensure_unused("setup")?;

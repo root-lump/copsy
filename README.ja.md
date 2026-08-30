@@ -76,7 +76,8 @@ copsy
 | `copsy status` | 各ワークツリーの `git status` を表示 |
 | `copsy close` | 現在のワークツリーを閉じてメインに戻る |
 | `copsy pr [対象]` | PR をワークツリーとしてチェックアウト（対象省略で対話選択） |
-| `copsy config init` | リポジトリのセットアップ設定を対話的に作成 |
+| `copsy config repo` | リポジトリ設定を対話的に作成 |
+| `copsy config global` | グローバル設定を対話的に作成 |
 | `copsy setup` | 現在のワークツリーでセットアップを実行 |
 | `copsy init <shell>` | シェル統合スクリプトを出力（`zsh` または `bash`） |
 
@@ -115,20 +116,24 @@ copsy pr 42 --cursor                # PR #42 チェックアウト + Cursor
 
 ## 設定
 
-設定ファイル: `~/.config/copsy/config.toml`（`$XDG_CONFIG_HOME` に対応）
+`copsy config global` を実行すると、`~/.config/copsy/config.toml`（`$XDG_CONFIG_HOME` に対応）にグローバル設定を対話的に作成します。ワークツリーのデフォルト作成先と、未コミットの変更をデフォルトで持ち運ぶかを設定できます。
 
 ```toml
 [worktree]
 # ワークツリーの作成先ディレクトリ（デフォルト: リポジトリの親ディレクトリ）
 # ~ 展開に対応
 base_dir = "~/worktrees"
+# ワークツリー移動時に未コミットの変更を持ち運ぶ
+carry_changes = true
 ```
 
 `base_dir` 未設定の場合、ワークツリーはリポジトリと同じ階層に `<リポジトリ名>-<ブランチ名>` の形式で作成されます。
 
+このコマンドは初回作成専用で、既存の設定ファイルを上書きしません。
+
 ### リポジトリセットアップ
 
-`copsy config init` を実行すると、Git common dir の `copsy.toml` にマシン固有のリポジトリ設定を作成します。対話画面では、グローバルなワークツリー作成先の上書き、メインワークツリーからコピーする ignored ファイル、自動的にセットアップするコマンドを選択できます。
+`copsy config repo` を実行すると、Git common dir の `copsy.toml` にマシン固有のリポジトリ設定を作成します。対話画面では、グローバルなワークツリー作成先の上書き、メインワークツリーからコピーする ignored ファイル、自動的にセットアップするコマンドを選択できます。
 
 ```toml
 # [worktree]
@@ -143,6 +148,7 @@ copy_from_main = [
 ```
 
 リポジトリの `base_dir` はグローバル設定を上書きします。リポジトリ側で未設定の値はグローバル設定を継承します。
+このコマンドは初回作成専用で、既存の設定ファイルを上書きしません。
 
 `auto` には `new`、`add`、`pr` を指定できます。省略した場合、またはセットアップを設定しない場合は、デフォルトの no-setup 状態になります。
 

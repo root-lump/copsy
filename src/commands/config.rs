@@ -1,4 +1,4 @@
-use crate::config::{Config, SetupTrigger};
+use crate::config::{Config, SetupTrigger, global_config_path};
 use crate::git;
 use crate::info;
 use crate::repository_path::RepositoryPath;
@@ -12,7 +12,7 @@ use std::path::Path;
 const NO_COPY_LABEL: &str = "Do not copy anything";
 const NO_AUTO_LABEL: &str = "Do not run setup automatically";
 
-struct ConfigDraft {
+struct RepositoryConfigDraft {
     base_dir: Option<String>,
     inherited_base_dir: Option<String>,
     auto: Vec<SetupTrigger>,
@@ -20,7 +20,12 @@ struct ConfigDraft {
     copy_examples: Vec<RepositoryPath>,
 }
 
-pub fn run_init() -> Result<()> {
+struct GlobalConfigDraft {
+    base_dir: Option<String>,
+    carry_changes: Option<bool>,
+}
+
+pub fn run_repo() -> Result<()> {
     let destination = git::repository_config_path()?;
     if destination.exists() {
         bail!(
@@ -41,7 +46,7 @@ pub fn run_init() -> Result<()> {
     let path_options = [global_label, "Override for this repository".to_string()];
     let Some(path_selection) = Select::with_theme(&theme)
         .with_prompt("Worktree base directory")
-        .items(&path_options)
+        .items(path_options)
         .default(0)
         .interact_opt()?
     else {
@@ -75,7 +80,7 @@ pub fn run_init() -> Result<()> {
     } else {
         ignored
     };
-    let draft = ConfigDraft {
+    let draft = RepositoryConfigDraft {
         base_dir,
         inherited_base_dir: global.base_dir_raw().map(str::to_owned),
         auto,
@@ -83,7 +88,61 @@ pub fn run_init() -> Result<()> {
         copy_examples,
     };
 
-    persist_config(&destination, &render_config(&draft))?;
+    persist_config(&destination, &render_repository_config(&draft))?;
+    info!("Created {}", destination.display());
+    Ok(())
+}
+
+pub fn run_global() -> Result<()> {
+    let destination = global_config_path();
+    if destination.exists() {
+        bail!("Global config already exists at {}", destination.display());
+    }
+
+    let theme = ColorfulTheme::default();
+    let path_options = ["Do not configure", "Set a custom path"];
+    let Some(path_selection) = Select::with_theme(&theme)
+        .with_prompt("Default worktree directory")
+        .items(path_options)
+        .default(0)
+        .interact_opt()?
+    else {
+        return Ok(());
+    };
+    let base_dir = if path_selection == 1 {
+        let Some(path) = OptionalInput::new("Default worktree directory").interact_opt()? else {
+            return Ok(());
+        };
+        Some(path)
+    } else {
+        None
+    };
+
+    let carry_options = [
+        "Do not configure",
+        "Always carry uncommitted changes",
+        "Never carry uncommitted changes",
+    ];
+    let Some(carry_selection) = Select::with_theme(&theme)
+        .with_prompt("Carry uncommitted changes by default")
+        .items(carry_options)
+        .default(0)
+        .interact_opt()?
+    else {
+        return Ok(());
+    };
+    let carry_changes = match carry_selection {
+        0 => None,
+        1 => Some(true),
+        2 => Some(false),
+        _ => unreachable!("dialoguer returned an invalid selection"),
+    };
+
+    let draft = GlobalConfigDraft {
+        base_dir,
+        carry_changes,
+    };
+    persist_config(&destination, &render_global_config(&draft))?;
     info!("Created {}", destination.display());
     Ok(())
 }
@@ -142,6 +201,10 @@ fn select_auto_triggers(theme: &ColorfulTheme) -> Result<Option<Vec<SetupTrigger
 }
 
 fn persist_config(destination: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -151,7 +214,7 @@ fn persist_config(destination: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("Failed to write {}", destination.display()))
 }
 
-fn render_config(draft: &ConfigDraft) -> String {
+fn render_repository_config(draft: &RepositoryConfigDraft) -> String {
     let mut lines = Vec::new();
     if let Some(base_dir) = &draft.base_dir {
         lines.push("[worktree]".to_string());
@@ -183,6 +246,24 @@ fn render_config(draft: &ConfigDraft) -> String {
     } else {
         render_copy_array(&mut lines, &draft.copy_from_main, false);
     }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn render_global_config(draft: &GlobalConfigDraft) -> String {
+    let configured = draft.base_dir.is_some() || draft.carry_changes.is_some();
+    let mut lines = vec![if configured {
+        "[worktree]".to_string()
+    } else {
+        "# [worktree]".to_string()
+    }];
+    lines.push(match &draft.base_dir {
+        Some(path) => format!("base_dir = {}", quote_toml(path)),
+        None => "# base_dir = \"~/worktrees\"".to_string(),
+    });
+    lines.push(match draft.carry_changes {
+        Some(value) => format!("carry_changes = {value}"),
+        None => "# carry_changes = false".to_string(),
+    });
     format!("{}\n", lines.join("\n"))
 }
 
@@ -273,8 +354,8 @@ mod tests {
         RepositoryPath::new(value).unwrap()
     }
 
-    fn draft() -> ConfigDraft {
-        ConfigDraft {
+    fn draft() -> RepositoryConfigDraft {
+        RepositoryConfigDraft {
             base_dir: None,
             inherited_base_dir: Some("~/worktrees".to_string()),
             auto: Vec::new(),
@@ -285,7 +366,7 @@ mod tests {
 
     #[test]
     fn renders_commented_defaults_without_blank_lines() {
-        let result = render_config(&draft());
+        let result = render_repository_config(&draft());
 
         assert_eq!(
             result,
@@ -306,7 +387,7 @@ mod tests {
 
     #[test]
     fn renders_typed_selections_and_multiline_copy() {
-        let draft = ConfigDraft {
+        let draft = RepositoryConfigDraft {
             base_dir: Some("~/repo-worktrees".to_string()),
             inherited_base_dir: None,
             auto: vec![SetupTrigger::New, SetupTrigger::Add],
@@ -315,7 +396,7 @@ mod tests {
         };
 
         assert_eq!(
-            render_config(&draft),
+            render_repository_config(&draft),
             concat!(
                 "[worktree]\n",
                 "base_dir = \"~/repo-worktrees\"\n",
@@ -336,6 +417,61 @@ mod tests {
     }
 
     #[test]
+    fn renders_unset_global_configuration_without_blank_lines() {
+        let result = render_global_config(&GlobalConfigDraft {
+            base_dir: None,
+            carry_changes: None,
+        });
+
+        assert_eq!(
+            result,
+            concat!(
+                "# [worktree]\n",
+                "# base_dir = \"~/worktrees\"\n",
+                "# carry_changes = false\n"
+            )
+        );
+        assert!(!result.contains("\n\n"));
+    }
+
+    #[test]
+    fn renders_configured_global_values_and_comments_unset_values() {
+        assert_eq!(
+            render_global_config(&GlobalConfigDraft {
+                base_dir: Some("~/custom".to_string()),
+                carry_changes: None,
+            }),
+            concat!(
+                "[worktree]\n",
+                "base_dir = \"~/custom\"\n",
+                "# carry_changes = false\n"
+            )
+        );
+        assert_eq!(
+            render_global_config(&GlobalConfigDraft {
+                base_dir: None,
+                carry_changes: Some(true),
+            }),
+            concat!(
+                "[worktree]\n",
+                "# base_dir = \"~/worktrees\"\n",
+                "carry_changes = true\n"
+            )
+        );
+        assert_eq!(
+            render_global_config(&GlobalConfigDraft {
+                base_dir: None,
+                carry_changes: Some(false),
+            }),
+            concat!(
+                "[worktree]\n",
+                "# base_dir = \"~/worktrees\"\n",
+                "carry_changes = false\n"
+            )
+        );
+    }
+
+    #[test]
     fn persistence_does_not_overwrite_existing_config() {
         let directory = tempdir().unwrap();
         let destination = directory.path().join("copsy.toml");
@@ -343,5 +479,15 @@ mod tests {
 
         assert!(persist_config(&destination, "replacement").is_err());
         assert_eq!(fs::read_to_string(destination).unwrap(), "existing");
+    }
+
+    #[test]
+    fn persistence_creates_missing_parent_directories() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("nested/copsy/config.toml");
+
+        persist_config(&destination, "content").unwrap();
+
+        assert_eq!(fs::read_to_string(destination).unwrap(), "content");
     }
 }
