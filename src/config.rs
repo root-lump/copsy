@@ -3,6 +3,7 @@ use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -197,14 +198,16 @@ where
 // Use XDG_CONFIG_HOME or ~/.config instead of dirs::config_dir(),
 // which returns ~/Library/Application Support on macOS.
 pub(crate) fn global_config_path() -> PathBuf {
-    let xdg_config = std::env::var("XDG_CONFIG_HOME")
+    config_home(std::env::var_os("XDG_CONFIG_HOME"), dirs::home_dir())
+        .join("copsy")
+        .join("config.toml")
+}
+
+fn config_home(xdg_config_home: Option<OsString>, home: Option<PathBuf>) -> PathBuf {
+    xdg_config_home
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".config")
-        });
-    xdg_config.join("copsy").join("config.toml")
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
 }
 
 pub(crate) fn expand_tilde(path: &str) -> String {
@@ -233,6 +236,24 @@ mod tests {
     fn expand_tilde_leaves_other_paths_unchanged() {
         assert_eq!(expand_tilde("/usr/local"), "/usr/local");
         assert_eq!(expand_tilde("relative/path"), "relative/path");
+    }
+
+    #[test]
+    fn config_home_accepts_only_absolute_xdg_paths() {
+        let home = PathBuf::from("/home/example");
+        assert_eq!(
+            config_home(Some(OsString::from("/custom/config")), Some(home.clone())),
+            PathBuf::from("/custom/config")
+        );
+        assert_eq!(
+            config_home(Some(OsString::new()), Some(home.clone())),
+            home.join(".config")
+        );
+        assert_eq!(
+            config_home(Some(OsString::from("relative/config")), Some(home.clone())),
+            home.join(".config")
+        );
+        assert_eq!(config_home(None, Some(home.clone())), home.join(".config"));
     }
 
     #[test]
