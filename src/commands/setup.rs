@@ -314,12 +314,10 @@ fn copy_directory(source: &Path, destination: &Path, metadata: &fs::Metadata) ->
         fs::set_permissions(destination, metadata.permissions())
     })();
     if let Err(error) = result {
-        return match remove_directory_tree(destination) {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(io::Error::other(format!(
-                "{error}; additionally, copy rollback failed: {rollback_error}"
-            ))),
-        };
+        return Err(combine_copy_and_rollback_error(
+            error,
+            remove_directory_tree(destination),
+        ));
     }
     Ok(())
 }
@@ -335,11 +333,23 @@ fn copy_file(source: &Path, destination: &Path, metadata: &fs::Metadata) -> io::
         destination_file.flush()?;
         fs::set_permissions(destination, metadata.permissions())
     })();
-    if result.is_err() {
+    if let Err(error) = result {
         drop(destination_file);
-        let _ = fs::remove_file(destination);
+        return Err(combine_copy_and_rollback_error(
+            error,
+            remove_file_for_rollback(destination),
+        ));
     }
-    result
+    Ok(())
+}
+
+fn combine_copy_and_rollback_error(copy_error: io::Error, rollback: io::Result<()>) -> io::Error {
+    match rollback {
+        Ok(()) => copy_error,
+        Err(rollback_error) => io::Error::other(format!(
+            "{copy_error}; additionally, copy rollback failed: {rollback_error}"
+        )),
+    }
 }
 
 #[cfg(unix)]
@@ -607,5 +617,17 @@ mod tests {
 
         assert!(!worktree.path().join("bundle").exists());
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn reports_copy_and_rollback_failures_together() {
+        let error = combine_copy_and_rollback_error(
+            io::Error::other("write failed"),
+            Err(io::Error::other("remove failed")),
+        );
+
+        let message = error.to_string();
+        assert!(message.contains("write failed"));
+        assert!(message.contains("copy rollback failed: remove failed"));
     }
 }
