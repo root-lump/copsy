@@ -26,9 +26,9 @@ fn shell_function() -> String {
     fi
 
     local cd_target=""
-    local -a launch_cmds
-    local -a open_cmds
-    local -a setup_dirs
+    local -a launch_cmds=()
+    local -a open_cmds=()
+    local -a setup_dirs=()
     while IFS= read -r line; do
         if [[ "$line" == {{CD_MARKER}}* ]]; then
             cd_target="${line#{{CD_MARKER}}}"
@@ -44,30 +44,36 @@ fn shell_function() -> String {
     done <<< "$output"
 
     # Run setup outside command substitution so interactive commands retain the TTY.
-    for dir in "${setup_dirs[@]}"; do
-        (cd "$dir" && command copsy setup --execute) || return $?
-    done
+    if (( ${#setup_dirs[@]} )); then
+        for dir in "${setup_dirs[@]}"; do
+            (cd "$dir" && command copsy setup --execute) || return $?
+        done
+    fi
 
     if [[ -n "$cd_target" ]]; then
         cd "$cd_target" || return 1
     fi
 
     # LAUNCH: case-dispatched for known tools (no eval for security)
-    for entry in "${launch_cmds[@]}"; do
-        local tool="${entry%%	*}"
-        local dir="${entry#*	}"
-        case "$tool" in
-            code)   code -- "$dir" ;;
-            cursor) cursor -- "$dir" ;;
-            claude) claude ;;
-            codex)  codex ;;
-        esac
-    done
+    if (( ${#launch_cmds[@]} )); then
+        for entry in "${launch_cmds[@]}"; do
+            local tool="${entry%%	*}"
+            local dir="${entry#*	}"
+            case "$tool" in
+                code)   code -- "$dir" ;;
+                cursor) cursor -- "$dir" ;;
+                claude) claude ;;
+                codex)  codex ;;
+            esac
+        done
+    fi
 
     # OPEN: eval is intentional — only user-provided --open commands reach here
-    for cmd in "${open_cmds[@]}"; do
-        eval "$cmd"
-    done
+    if (( ${#open_cmds[@]} )); then
+        for cmd in "${open_cmds[@]}"; do
+            eval "$cmd"
+        done
+    fi
 
     return $exit_code
 }
@@ -348,6 +354,15 @@ mod tests {
             assert!(shell.contains(marker), "missing {marker}");
         }
         assert!(!shell.contains("{{"));
+    }
+
+    #[test]
+    fn shell_initializes_marker_arrays_for_bash_nounset() {
+        let shell = shell_function();
+        for array in ["launch_cmds", "open_cmds", "setup_dirs"] {
+            assert!(shell.contains(&format!("local -a {array}=()")));
+            assert!(shell.contains(&format!("if (( ${{#{array}[@]}} )); then")));
+        }
     }
 
     #[test]
