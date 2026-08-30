@@ -6,7 +6,7 @@ use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn request_current() -> Result<()> {
@@ -29,22 +29,41 @@ fn execute(worktree: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let main_worktree = git::main_worktree_path()?;
-    for configured in setup.copy_from_main() {
-        copy_configured_path(&main_worktree, worktree, configured)?;
-    }
+    execute_actions(
+        &git::main_worktree_path()?,
+        worktree,
+        setup.copy_from_main(),
+        setup.command(),
+    )
+}
 
-    if let Some(command) = setup.command() {
-        run_command(worktree, command)?;
+fn execute_actions(
+    main_worktree: &Path,
+    worktree: &Path,
+    copy_from_main: &[RepositoryPath],
+    command: Option<&[String]>,
+) -> Result<()> {
+    let mut created = Vec::new();
+    let result = (|| {
+        for configured in copy_from_main {
+            created.extend(copy_configured_path(main_worktree, worktree, configured)?);
+        }
+        if let Some(command) = command {
+            run_command(worktree, command)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        remove_created_paths(&created);
     }
-    Ok(())
+    result
 }
 
 fn copy_configured_path(
     main_worktree: &Path,
     worktree: &Path,
     relative: &RepositoryPath,
-) -> Result<()> {
+) -> Result<Vec<CreatedPath>> {
     check_existing_ancestors(main_worktree, relative)?;
     let source = main_worktree.join(relative.as_path());
     if !entry_exists(&source)? {
@@ -52,19 +71,26 @@ fn copy_configured_path(
             "Warning: skipping '{}': source does not exist in the main worktree.",
             relative
         );
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     check_existing_ancestors(worktree, relative)?;
     let destination = worktree.join(relative.as_path());
     if entry_exists(&destination)? {
         info!("Skipping '{}': destination already exists.", relative);
-        return Ok(());
+        return Ok(Vec::new());
     }
-    create_safe_parent_directories(worktree, relative)?;
+    let mut created = create_safe_parent_directories(worktree, relative)?;
 
     info!("Copying '{}' from the main worktree...", relative);
-    copy_entry(&source, &destination).with_context(|| format!("Failed to copy '{relative}'"))
+    if let Err(error) =
+        copy_entry(&source, &destination).with_context(|| format!("Failed to copy '{relative}'"))
+    {
+        remove_created_paths(&created);
+        return Err(error);
+    }
+    created.push(CreatedPath::Entry(destination));
+    Ok(created)
 }
 
 fn check_existing_ancestors(root: &Path, relative: &RepositoryPath) -> Result<()> {
@@ -97,40 +123,94 @@ fn check_existing_ancestors(root: &Path, relative: &RepositoryPath) -> Result<()
     Ok(())
 }
 
-fn create_safe_parent_directories(root: &Path, relative: &RepositoryPath) -> Result<()> {
+fn create_safe_parent_directories(
+    root: &Path,
+    relative: &RepositoryPath,
+) -> Result<Vec<CreatedPath>> {
+    let mut created = Vec::new();
     let mut current = root.to_path_buf();
     let Some(parent) = relative.as_path().parent() else {
-        return Ok(());
+        return Ok(created);
     };
     for component in parent.components() {
         current.push(component.as_os_str());
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
+                remove_created_paths(&created);
                 bail!(
                     "Refusing to use symbolic-link ancestor {}",
                     current.display()
                 );
             }
             Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => bail!("Path ancestor {} is not a directory", current.display()),
+            Ok(_) => {
+                remove_created_paths(&created);
+                bail!("Path ancestor {} is not a directory", current.display());
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if let Err(error) = fs::create_dir(&current)
-                    && error.kind() != io::ErrorKind::AlreadyExists
-                {
-                    return Err(error.into());
+                match fs::create_dir(&current) {
+                    Ok(()) => created.push(CreatedPath::Parent(current.clone())),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        remove_created_paths(&created);
+                        return Err(error.into());
+                    }
                 }
-                let metadata = fs::symlink_metadata(&current)?;
+                let metadata = match fs::symlink_metadata(&current) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        remove_created_paths(&created);
+                        return Err(error.into());
+                    }
+                };
                 if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    remove_created_paths(&created);
                     bail!(
                         "Path ancestor {} is not a safe directory",
                         current.display()
                     );
                 }
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                remove_created_paths(&created);
+                return Err(error.into());
+            }
         }
     }
-    Ok(())
+    Ok(created)
+}
+
+fn remove_created_paths(paths: &[CreatedPath]) {
+    for created in paths.iter().rev() {
+        let path = created.path();
+        match (created, fs::symlink_metadata(path)) {
+            (CreatedPath::Entry(_), Ok(metadata))
+                if metadata.is_dir() && !metadata.file_type().is_symlink() =>
+            {
+                let _ = fs::remove_dir_all(path);
+            }
+            (CreatedPath::Entry(_), Ok(_)) => {
+                let _ = fs::remove_file(path);
+            }
+            (CreatedPath::Parent(_), Ok(_)) => {
+                let _ = fs::remove_dir(path);
+            }
+            (_, Err(_)) => {}
+        }
+    }
+}
+
+enum CreatedPath {
+    Entry(PathBuf),
+    Parent(PathBuf),
+}
+
+impl CreatedPath {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Entry(path) | Self::Parent(path) => path,
+        }
+    }
 }
 
 fn entry_exists(path: &Path) -> io::Result<bool> {
@@ -388,5 +468,52 @@ mod tests {
         let worktree = tempdir().unwrap();
         let command = vec!["sh".to_string(), "-c".to_string(), "exit 7".to_string()];
         assert!(run_command(worktree.path(), &command).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rolls_back_new_copies_when_the_command_fails() {
+        let main = tempdir().unwrap();
+        let worktree = tempdir().unwrap();
+        fs::write(main.path().join(".env"), "main").unwrap();
+        fs::create_dir(main.path().join("config")).unwrap();
+        fs::write(main.path().join("config/local.toml"), "main").unwrap();
+        fs::create_dir(main.path().join("bundle")).unwrap();
+        fs::write(main.path().join("bundle/file"), "main").unwrap();
+        fs::write(worktree.path().join("existing"), "keep").unwrap();
+        let paths = [
+            repository_path(".env"),
+            repository_path("config/local.toml"),
+            repository_path("bundle"),
+        ];
+        let command = ["sh".to_string(), "-c".to_string(), "exit 7".to_string()];
+
+        assert!(execute_actions(main.path(), worktree.path(), &paths, Some(&command)).is_err());
+
+        assert!(!worktree.path().join(".env").exists());
+        assert!(!worktree.path().join("config").exists());
+        assert!(!worktree.path().join("bundle").exists());
+        assert_eq!(
+            fs::read_to_string(worktree.path().join("existing")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_preserves_destinations_that_already_existed() {
+        let main = tempdir().unwrap();
+        let worktree = tempdir().unwrap();
+        fs::write(main.path().join(".env"), "main").unwrap();
+        fs::write(worktree.path().join(".env"), "worktree").unwrap();
+        let paths = [repository_path(".env")];
+        let command = ["sh".to_string(), "-c".to_string(), "exit 7".to_string()];
+
+        assert!(execute_actions(main.path(), worktree.path(), &paths, Some(&command)).is_err());
+
+        assert_eq!(
+            fs::read_to_string(worktree.path().join(".env")).unwrap(),
+            "worktree"
+        );
     }
 }

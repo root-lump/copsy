@@ -8,6 +8,9 @@ pub struct RepositoryPath(String);
 impl RepositoryPath {
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
+        if has_explicit_dot_component(&value) {
+            bail!("current-directory components are not allowed");
+        }
         validate(Path::new(&value))?;
         Ok(Self(value))
     }
@@ -19,6 +22,11 @@ impl RepositoryPath {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn has_explicit_dot_component(value: &str) -> bool {
+    value.split('/').any(|component| component == ".")
+        || (cfg!(windows) && value.split('\\').any(|component| component == "."))
 }
 
 impl fmt::Display for RepositoryPath {
@@ -61,6 +69,8 @@ mod tests {
             "",
             ".",
             "./config",
+            "config/./local.toml",
+            "config/.",
             "../secret",
             "/tmp/secret",
             ".git",

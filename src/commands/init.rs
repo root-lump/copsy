@@ -159,8 +159,18 @@ _copsy() {
                 '(--no-setup)--setup[Run repository setup]'
                 '(--setup)--no-setup[Do not run repository setup]'
             )
+            local skip_next=0
             for word in "${words[@]}"; do
+                if (( skip_next )); then
+                    skip_next=0
+                    continue
+                fi
                 case "$word" in
+                    --open)
+                        skip_next=1
+                        ;;
+                    --open=*)
+                        ;;
                     new|add|switch|sw|remove|rm|list|ls|status|close|init|pr|config|setup)
                         subcommand="$word"
                         break
@@ -212,13 +222,23 @@ _copsy_bash() {
     local cur prev subcmds subcommand word
     local subcommand_index=0
     local index
+    local skip_next=0
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     subcmds="new add switch sw remove rm list ls status close init pr config setup"
 
     for ((index=1; index<COMP_CWORD; index++)); do
         word="${COMP_WORDS[index]}"
+        if [[ $skip_next -eq 1 ]]; then
+            skip_next=0
+            continue
+        fi
         case "$word" in
+            --open)
+                skip_next=1
+                ;;
+            --open=*)
+                ;;
             new|add|switch|sw|remove|rm|list|ls|status|close|init|pr|config|setup)
                 subcommand="$word"
                 subcommand_index=$index
@@ -343,5 +363,11 @@ mod tests {
         let add = add.split("        switch|sw)").next().unwrap();
         assert!(new.contains("--from"));
         assert!(!add.contains("--from"));
+
+        for completion in [zsh, bash] {
+            assert!(completion.contains("skip_next=1"));
+            assert!(completion.contains("--open)"));
+            assert!(completion.contains("--open=*)"));
+        }
     }
 }
