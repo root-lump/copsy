@@ -1,14 +1,24 @@
-use crate::config::Config;
+use crate::config::{Config, SetupTrigger};
 use crate::git;
 use crate::info;
+use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
 use console::{Key, Term};
 use dialoguer::{MultiSelect, Select, theme::ColorfulTheme};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::Path;
 
 const NO_COPY_LABEL: &str = "Do not copy anything";
 const NO_AUTO_LABEL: &str = "Do not run setup automatically";
+
+struct ConfigDraft {
+    base_dir: Option<String>,
+    inherited_base_dir: Option<String>,
+    auto: Vec<SetupTrigger>,
+    copy_from_main: Vec<RepositoryPath>,
+    copy_examples: Vec<RepositoryPath>,
+}
 
 pub fn run_init() -> Result<()> {
     let destination = git::repository_config_path()?;
@@ -48,123 +58,139 @@ pub fn run_init() -> Result<()> {
         None
     };
 
-    let copy_from_main = if ignored.is_empty() {
-        Vec::new()
-    } else {
-        let mut options = vec![NO_COPY_LABEL.to_string()];
-        options.extend(ignored.iter().cloned());
-        let mut defaults = vec![false; options.len()];
-        defaults[0] = true;
-        let Some(selected) = MultiSelect::with_theme(&theme)
-            .with_prompt("Copy files from the main worktree")
-            .items(&options)
-            .defaults(&defaults)
-            .interact_opt()?
-        else {
-            return Ok(());
-        };
-        selected
-            .into_iter()
-            .filter(|index| *index > 0)
-            .map(|index| options[index].clone())
-            .collect()
-    };
-
-    let auto_options = [
-        NO_AUTO_LABEL,
-        "copsy new",
-        "copsy add",
-        "copsy pr (may execute untrusted code)",
-    ];
-    let auto_defaults = [true, false, false, false];
-    let Some(selected_auto) = MultiSelect::with_theme(&theme)
-        .with_prompt("Automatically run setup for")
-        .items(auto_options)
-        .defaults(&auto_defaults)
-        .interact_opt()?
-    else {
+    let copy_from_main = select_copy_paths(&theme, &ignored)?;
+    let Some(copy_from_main) = copy_from_main else {
         return Ok(());
     };
-    let auto = selected_auto
-        .into_iter()
-        .filter_map(|index| match index {
-            1 => Some("new"),
-            2 => Some("add"),
-            3 => Some("pr"),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let auto = select_auto_triggers(&theme)?;
+    let Some(auto) = auto else {
+        return Ok(());
+    };
 
     let copy_examples = if ignored.is_empty() {
-        vec![".env".to_string(), ".env.local".to_string()]
+        vec![
+            RepositoryPath::new(".env")?,
+            RepositoryPath::new(".env.local")?,
+        ]
     } else {
         ignored
     };
-    let content = render_config(
-        base_dir.as_deref(),
-        global.base_dir_raw(),
-        &auto,
-        &copy_from_main,
-        &copy_examples,
-    );
+    let draft = ConfigDraft {
+        base_dir,
+        inherited_base_dir: global.base_dir_raw().map(str::to_owned),
+        auto,
+        copy_from_main,
+        copy_examples,
+    };
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .with_context(|| format!("Failed to create {}", destination.display()))?;
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("Failed to write {}", destination.display()))?;
-
+    persist_config(&destination, &render_config(&draft))?;
     info!("Created {}", destination.display());
     Ok(())
 }
 
-fn render_config(
-    base_dir: Option<&str>,
-    global_base_dir: Option<&str>,
-    auto: &[&str],
-    copy_from_main: &[String],
-    copy_examples: &[String],
-) -> String {
+fn select_copy_paths(
+    theme: &ColorfulTheme,
+    ignored: &[RepositoryPath],
+) -> Result<Option<Vec<RepositoryPath>>> {
+    if ignored.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut options = vec![NO_COPY_LABEL.to_string()];
+    options.extend(ignored.iter().map(|path| path.as_str().to_string()));
+    let mut defaults = vec![false; options.len()];
+    defaults[0] = true;
+    let Some(selected) = MultiSelect::with_theme(theme)
+        .with_prompt("Copy files from the main worktree")
+        .items(&options)
+        .defaults(&defaults)
+        .interact_opt()?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        selected
+            .into_iter()
+            .filter(|index| *index > 0)
+            .map(|index| ignored[index - 1].clone())
+            .collect(),
+    ))
+}
+
+fn select_auto_triggers(theme: &ColorfulTheme) -> Result<Option<Vec<SetupTrigger>>> {
+    let mut options = vec![NO_AUTO_LABEL];
+    options.extend(SetupTrigger::ALL.map(SetupTrigger::prompt_label));
+    let mut defaults = vec![false; options.len()];
+    defaults[0] = true;
+    let Some(selected) = MultiSelect::with_theme(theme)
+        .with_prompt("Automatically run setup for")
+        .items(&options)
+        .defaults(&defaults)
+        .interact_opt()?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        selected
+            .into_iter()
+            .filter(|index| *index > 0)
+            .map(|index| SetupTrigger::ALL[index - 1])
+            .collect(),
+    ))
+}
+
+fn persist_config(destination: &Path, content: &str) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .with_context(|| format!("Failed to create {}", destination.display()))?;
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write {}", destination.display()))
+}
+
+fn render_config(draft: &ConfigDraft) -> String {
     let mut lines = Vec::new();
-    if let Some(base_dir) = base_dir {
+    if let Some(base_dir) = &draft.base_dir {
         lines.push("[worktree]".to_string());
         lines.push(format!("base_dir = {}", quote_toml(base_dir)));
     } else {
         lines.push("# [worktree]".to_string());
         lines.push(format!(
             "# base_dir = {}",
-            quote_toml(global_base_dir.unwrap_or("~/worktrees"))
+            quote_toml(draft.inherited_base_dir.as_deref().unwrap_or("~/worktrees"))
         ));
     }
 
     lines.push("[setup]".to_string());
-    if auto.is_empty() {
+    if draft.auto.is_empty() {
         lines.push("# auto = [\"new\"]".to_string());
     } else {
-        let values = auto
+        let values = draft
+            .auto
             .iter()
-            .map(|value| quote_toml(value))
+            .map(|trigger| quote_toml(trigger.config_value()))
             .collect::<Vec<_>>()
             .join(", ");
         lines.push(format!("auto = [{values}]"));
     }
     lines.push("# command = [\"npm\", \"install\"]".to_string());
 
-    if copy_from_main.is_empty() {
-        render_copy_array(&mut lines, copy_examples, true);
+    if draft.copy_from_main.is_empty() {
+        render_copy_array(&mut lines, &draft.copy_examples, true);
     } else {
-        render_copy_array(&mut lines, copy_from_main, false);
+        render_copy_array(&mut lines, &draft.copy_from_main, false);
     }
     format!("{}\n", lines.join("\n"))
 }
 
-fn render_copy_array(lines: &mut Vec<String>, paths: &[String], commented: bool) {
+fn render_copy_array(lines: &mut Vec<String>, paths: &[RepositoryPath], commented: bool) {
     let prefix = if commented { "# " } else { "" };
     lines.push(format!("{prefix}copy_from_main = ["));
     for path in paths {
-        lines.push(format!("{prefix}  {},", quote_toml(path)));
+        lines.push(format!("{prefix}  {},", quote_toml(path.as_str())));
     }
     lines.push(format!("{prefix}]"));
 }
@@ -240,11 +266,26 @@ impl<'a> OptionalInput<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn path(value: &str) -> RepositoryPath {
+        RepositoryPath::new(value).unwrap()
+    }
+
+    fn draft() -> ConfigDraft {
+        ConfigDraft {
+            base_dir: None,
+            inherited_base_dir: Some("~/worktrees".to_string()),
+            auto: Vec::new(),
+            copy_from_main: Vec::new(),
+            copy_examples: vec![path(".env"), path("target")],
+        }
+    }
 
     #[test]
     fn renders_commented_defaults_without_blank_lines() {
-        let examples = vec![".env".to_string(), "target".to_string()];
-        let result = render_config(None, Some("~/worktrees"), &[], &[], &examples);
+        let result = render_config(&draft());
 
         assert_eq!(
             result,
@@ -264,18 +305,17 @@ mod tests {
     }
 
     #[test]
-    fn renders_selected_copy_as_multiline_array() {
-        let selected = vec![".env".to_string()];
-        let result = render_config(
-            Some("~/repo-worktrees"),
-            None,
-            &["new", "add"],
-            &selected,
-            &selected,
-        );
+    fn renders_typed_selections_and_multiline_copy() {
+        let draft = ConfigDraft {
+            base_dir: Some("~/repo-worktrees".to_string()),
+            inherited_base_dir: None,
+            auto: vec![SetupTrigger::New, SetupTrigger::Add],
+            copy_from_main: vec![path(".env"), path("config/local.toml")],
+            copy_examples: Vec::new(),
+        };
 
         assert_eq!(
-            result,
+            render_config(&draft),
             concat!(
                 "[worktree]\n",
                 "base_dir = \"~/repo-worktrees\"\n",
@@ -284,6 +324,7 @@ mod tests {
                 "# command = [\"npm\", \"install\"]\n",
                 "copy_from_main = [\n",
                 "  \".env\",\n",
+                "  \"config/local.toml\",\n",
                 "]\n"
             )
         );
@@ -292,5 +333,15 @@ mod tests {
     #[test]
     fn escapes_toml_strings() {
         assert_eq!(quote_toml("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn persistence_does_not_overwrite_existing_config() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("copsy.toml");
+        fs::write(&destination, "existing").unwrap();
+
+        assert!(persist_config(&destination, "replacement").is_err());
+        assert_eq!(fs::read_to_string(destination).unwrap(), "existing");
     }
 }

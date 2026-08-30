@@ -1,4 +1,4 @@
-use crate::config::validate_repository_relative_path;
+use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -116,7 +116,7 @@ pub fn list_worktrees() -> Result<Vec<WorktreeInfo>> {
     Ok(worktrees)
 }
 
-pub fn list_ignored_paths(main_worktree: &Path) -> Result<Vec<String>> {
+pub fn list_ignored_paths(main_worktree: &Path) -> Result<Vec<RepositoryPath>> {
     let output = Command::new("git")
         .args([
             "status",
@@ -135,7 +135,7 @@ pub fn list_ignored_paths(main_worktree: &Path) -> Result<Vec<String>> {
     Ok(parse_ignored_paths(&output.stdout))
 }
 
-fn parse_ignored_paths(output: &[u8]) -> Vec<String> {
+fn parse_ignored_paths(output: &[u8]) -> Vec<RepositoryPath> {
     let mut paths = Vec::new();
     for record in output.split(|byte| *byte == 0) {
         let Some(path) = record.strip_prefix(b"!! ") else {
@@ -146,8 +146,8 @@ fn parse_ignored_paths(output: &[u8]) -> Vec<String> {
             continue;
         };
         let path = path.trim_end_matches('/');
-        if validate_repository_relative_path(Path::new(path)).is_ok() {
-            paths.push(path.to_string());
+        if let Ok(path) = RepositoryPath::new(path) {
+            paths.push(path);
         }
     }
     paths.sort();
@@ -464,14 +464,21 @@ mod tests {
         let output = b"!! .env\0!! node_modules/\0!! target/\0?? untracked\0";
         assert_eq!(
             parse_ignored_paths(output),
-            vec![".env", "node_modules", "target"]
+            vec![
+                RepositoryPath::new(".env").unwrap(),
+                RepositoryPath::new("node_modules").unwrap(),
+                RepositoryPath::new("target").unwrap(),
+            ]
         );
     }
 
     #[test]
     fn ignored_paths_exclude_git_and_unsafe_paths() {
         let output = b"!! .git/\0!! nested/.git/config\0!! ../outside\0!! safe/file\0";
-        assert_eq!(parse_ignored_paths(output), vec!["safe/file"]);
+        assert_eq!(
+            parse_ignored_paths(output),
+            vec![RepositoryPath::new("safe/file").unwrap()]
+        );
     }
 
     #[test]
@@ -524,7 +531,10 @@ mod tests {
 
         assert_eq!(
             list_ignored_paths(repository.path()).unwrap(),
-            vec![".env", "target"]
+            vec![
+                RepositoryPath::new(".env").unwrap(),
+                RepositoryPath::new("target").unwrap(),
+            ]
         );
     }
 

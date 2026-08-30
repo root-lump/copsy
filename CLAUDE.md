@@ -26,8 +26,9 @@ cargo test
 - `src/main.rs` — Entry point, dispatches to command handlers
 - `src/cli.rs` — clap derive definitions
 - `src/git.rs` — Git/gh command wrappers
-- `src/config.rs` — Config file loading (`~/.config/copsy/config.toml`)
-- `src/output.rs` — Marker protocol (`__COPSY_CD__`, `__COPSY_LAUNCH__`, `__COPSY_OPEN__`) for shell function communication
+- `src/config.rs` — Global and repository configuration loading and resolution
+- `src/repository_path.rs` — Validated repository-relative paths used by setup copies
+- `src/output.rs` — Marker protocol (`__COPSY_CD__`, `__COPSY_LAUNCH__`, `__COPSY_OPEN__`, `__COPSY_SETUP__`) for shell function communication
 - `src/launcher.rs` — Emits launch markers for editors/AI tools
 - `src/commands/` — One file per subcommand
 
@@ -46,6 +47,5 @@ cargo test
 - Only markers (`__COPSY_*`) may be written to stdout. All user-facing messages must use the `info!` macro (stderr)
 - Use `use` declarations for external module references instead of inline `crate::foo`
 - Interactive dialogs (`FuzzySelect`, etc.) must use `interact_opt()` so Esc cancels the dialog
-- When adding or changing CLI options, always update the zsh/bash completion definitions in `src/commands/init.rs`
 - `add::run` is called from multiple places (`main.rs`, `interactive.rs`, `pr.rs`). Update all call sites when changing its signature
 - `colored::control::set_override(true)` must be called before clap parsing to force colors through the shell function's pipe

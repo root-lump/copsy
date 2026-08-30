@@ -1,18 +1,12 @@
-use crate::cli::{CarryFlags, LaunchFlags, SetupFlags};
+use crate::cli::TransitionOptions;
+use crate::commands::worktree::{self, SetupContext};
 use crate::config::Config;
 use crate::git;
 use crate::info;
-use crate::launcher;
-use crate::output;
 use crate::theme;
 use anyhow::{Result, bail};
 
-pub fn run(
-    name: Option<&str>,
-    launch: &LaunchFlags,
-    carry: &CarryFlags,
-    setup: &SetupFlags,
-) -> Result<()> {
+pub fn run(name: Option<&str>, options: &TransitionOptions) -> Result<()> {
     let worktrees = git::list_worktrees()?;
     let non_bare: Vec<_> = worktrees.iter().filter(|w| !w.is_bare).collect();
 
@@ -37,18 +31,12 @@ pub fn run(
     };
 
     let config = Config::load()?;
-    let should_carry = carry.should_carry(config.carry_changes());
-    let current_dir = std::env::current_dir()?;
-    let stash_tag = git::carry_stash(&current_dir, should_carry)?;
-
     info!("Switching to worktree '{}'", target.branch);
-    git::carry_unstash(&target.path, &stash_tag);
-
-    if setup.should_setup(false, false) {
-        output::request_setup(&target.path);
-    }
-    output::request_cd(&target.path);
-    launcher::launch_tools(launch, &target.path);
-
-    Ok(())
+    worktree::transition(
+        &target.path,
+        &config,
+        options,
+        SetupContext::Existing,
+        || Ok(()),
+    )
 }

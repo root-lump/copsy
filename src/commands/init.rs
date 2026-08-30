@@ -1,9 +1,11 @@
+use crate::output;
 use anyhow::{Result, bail};
 
 pub fn run(shell: &str) -> Result<()> {
+    let shell_function = shell_function();
     match shell {
-        "zsh" => print!("{}{}", shell_function(), zsh_completion()),
-        "bash" => print!("{}{}", shell_function(), bash_completion()),
+        "zsh" => print!("{shell_function}{}", zsh_completion()),
+        "bash" => print!("{shell_function}{}", bash_completion()),
         _ => bail!("Unsupported shell: {shell}. Supported: zsh, bash"),
     }
     Ok(())
@@ -11,14 +13,14 @@ pub fn run(shell: &str) -> Result<()> {
 
 // Shell function wrapper that captures stdout markers and dispatches them.
 // Without markers (e.g. --help), output is passed through unchanged to avoid garbling.
-fn shell_function() -> &'static str {
+fn shell_function() -> String {
     r#"copsy() {
     local output
     output="$(command copsy "$@")"
     local exit_code=$?
 
     # No markers — pass raw output through (preserves --help formatting)
-    if [[ "$output" != *__COPSY_* ]]; then
+    if [[ "$output" != *{{MARKER_NAMESPACE}}* ]]; then
         [[ -n "$output" ]] && printf '%s\n' "$output"
         return $exit_code
     fi
@@ -28,14 +30,14 @@ fn shell_function() -> &'static str {
     local -a open_cmds
     local -a setup_dirs
     while IFS= read -r line; do
-        if [[ "$line" == __COPSY_CD__* ]]; then
-            cd_target="${line#__COPSY_CD__}"
-        elif [[ "$line" == __COPSY_LAUNCH__* ]]; then
-            launch_cmds+=("${line#__COPSY_LAUNCH__}")
-        elif [[ "$line" == __COPSY_OPEN__* ]]; then
-            open_cmds+=("${line#__COPSY_OPEN__}")
-        elif [[ "$line" == __COPSY_SETUP__* ]]; then
-            setup_dirs+=("${line#__COPSY_SETUP__}")
+        if [[ "$line" == {{CD_MARKER}}* ]]; then
+            cd_target="${line#{{CD_MARKER}}}"
+        elif [[ "$line" == {{LAUNCH_MARKER}}* ]]; then
+            launch_cmds+=("${line#{{LAUNCH_MARKER}}}")
+        elif [[ "$line" == {{OPEN_MARKER}}* ]]; then
+            open_cmds+=("${line#{{OPEN_MARKER}}}")
+        elif [[ "$line" == {{SETUP_MARKER}}* ]]; then
+            setup_dirs+=("${line#{{SETUP_MARKER}}}")
         else
             printf '%s\n' "$line"
         fi
@@ -70,6 +72,11 @@ fn shell_function() -> &'static str {
     return $exit_code
 }
 "#
+    .replace("{{MARKER_NAMESPACE}}", output::MARKER_NAMESPACE)
+    .replace("{{CD_MARKER}}", output::CD_MARKER)
+    .replace("{{LAUNCH_MARKER}}", output::LAUNCH_MARKER)
+    .replace("{{OPEN_MARKER}}", output::OPEN_MARKER)
+    .replace("{{SETUP_MARKER}}", output::SETUP_MARKER)
 }
 
 fn zsh_completion() -> &'static str {
@@ -91,6 +98,8 @@ _copsy_worktrees() {
 
 _copsy() {
     local ret=1
+    local subcommand=""
+    local word
     local -a args
 
     args=(
@@ -124,7 +133,7 @@ _copsy() {
                 'ls:List all worktrees'
                 'status:Show git status for all worktrees'
                 'close:Close current worktree and return to main'
-                'init:Output shell integration function'
+                'init:Output shell integration and completion definitions'
                 'pr:Checkout a pull request as a worktree'
                 'config:Manage repository configuration'
                 'setup:Run repository setup for the current worktree'
@@ -150,7 +159,15 @@ _copsy() {
                 '(--no-setup)--setup[Run repository setup]'
                 '(--setup)--no-setup[Do not run repository setup]'
             )
-            case "${words[1]}" in
+            for word in "${words[@]}"; do
+                case "$word" in
+                    new|add|switch|sw|remove|rm|list|ls|status|close|init|pr|config|setup)
+                        subcommand="$word"
+                        break
+                        ;;
+                esac
+            done
+            case "$subcommand" in
                 new)
                     _arguments -s -S $launch_flags $carry_flags $setup_flags '--from=[Base branch]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
                     ;;
@@ -192,12 +209,25 @@ compdef _copsy copsy
 fn bash_completion() -> &'static str {
     r#"
 _copsy_bash() {
-    local cur prev subcmds
+    local cur prev subcmds subcommand word
+    local subcommand_index=0
+    local index
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     subcmds="new add switch sw remove rm list ls status close init pr config setup"
 
-    if [[ ${COMP_CWORD} -eq 1 ]]; then
+    for ((index=1; index<COMP_CWORD; index++)); do
+        word="${COMP_WORDS[index]}"
+        case "$word" in
+            new|add|switch|sw|remove|rm|list|ls|status|close|init|pr|config|setup)
+                subcommand="$word"
+                subcommand_index=$index
+                break
+                ;;
+        esac
+    done
+
+    if [[ -z "$subcommand" ]]; then
         if [[ "${cur}" == -* ]]; then
             COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
         else
@@ -206,11 +236,20 @@ _copsy_bash() {
         return
     fi
 
-    case "${COMP_WORDS[1]}" in
-        new|add)
+    case "$subcommand" in
+        new)
             if [[ "${cur}" == -* ]]; then
                 COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup --from -c --claude -x --codex --code --cursor --open" -- "${cur}"))
-            elif [[ ${COMP_CWORD} -eq 2 ]]; then
+            elif [[ "$prev" != "--open" ]]; then
+                local branches
+                branches="$(git branch --format='%(refname:short)' 2>/dev/null)"
+                COMPREPLY=($(compgen -W "${branches}" -- "${cur}"))
+            fi
+            ;;
+        add)
+            if [[ "${cur}" == -* ]]; then
+                COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+            elif [[ "$prev" != "--open" ]]; then
                 local branches
                 branches="$(git branch --format='%(refname:short)' 2>/dev/null)"
                 COMPREPLY=($(compgen -W "${branches}" -- "${cur}"))
@@ -219,7 +258,7 @@ _copsy_bash() {
         switch|sw)
             if [[ "${cur}" == -* ]]; then
                 COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
-            elif [[ ${COMP_CWORD} -eq 2 ]]; then
+            elif [[ "$prev" != "--open" ]]; then
                 local worktrees
                 worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"
                 COMPREPLY=($(compgen -W "${worktrees}" -- "${cur}"))
@@ -238,7 +277,7 @@ _copsy_bash() {
             fi
             ;;
         init)
-            if [[ ${COMP_CWORD} -eq 2 ]]; then
+            if [[ ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
                 COMPREPLY=($(compgen -W "zsh bash" -- "${cur}"))
             fi
             ;;
@@ -248,7 +287,7 @@ _copsy_bash() {
             fi
             ;;
         config)
-            if [[ ${COMP_CWORD} -eq 2 ]]; then
+            if [[ ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
                 COMPREPLY=($(compgen -W "init" -- "${cur}"))
             fi
             ;;
@@ -280,5 +319,29 @@ mod tests {
             assert!(completion.contains("setup"));
             assert!(completion.contains("--no-setup"));
         }
+    }
+
+    #[test]
+    fn shell_uses_every_protocol_marker_from_output_module() {
+        let shell = shell_function();
+        for marker in output::MARKERS {
+            assert!(shell.contains(marker), "missing {marker}");
+        }
+        assert!(!shell.contains("{{"));
+    }
+
+    #[test]
+    fn completions_dispatch_using_the_detected_subcommand() {
+        let zsh = zsh_completion();
+        assert!(zsh.contains("case \"$subcommand\" in"));
+        assert!(!zsh.contains("case \"${words[1]}\" in"));
+
+        let bash = bash_completion();
+        let new = bash.split("        new)").nth(1).unwrap();
+        let new = new.split("        add)").next().unwrap();
+        let add = bash.split("        add)").nth(1).unwrap();
+        let add = add.split("        switch|sw)").next().unwrap();
+        assert!(new.contains("--from"));
+        assert!(!add.contains("--from"));
     }
 }

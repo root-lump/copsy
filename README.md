@@ -47,7 +47,8 @@ Or for bash, add to your `~/.bashrc`:
 eval "$(copsy init bash)"
 ```
 
-This sets up a shell function that enables `cd` into worktrees and tab completion.
+This sets up a shell function that enables `cd` into worktrees, tab completion,
+and TTY-preserving repository setup execution.
 
 ## Usage
 
@@ -147,9 +148,14 @@ copy_from_main = [
 Repository `base_dir` overrides the global value. Unset repository values
 inherit the global configuration.
 
+`auto` accepts `new`, `add`, and `pr`. Omit it or leave setup unconfigured to
+keep the default no-setup behavior.
+
 Setup copies configured files and directories before running `command`.
 Existing destinations are never overwritten. Run setup explicitly with
 `copsy setup` or `--setup`; use `--no-setup` to override `auto`.
+`copsy setup` and automatic setup use the shell integration so interactive
+commands such as package managers retain the current terminal.
 
 ```sh
 copsy new feature --setup

@@ -4,12 +4,14 @@ mod config;
 mod git;
 mod launcher;
 mod output;
+mod repository_path;
 mod spinner;
 mod theme;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command, ConfigCommand};
+use commands::worktree::CreationKind;
 
 fn main() -> Result<()> {
     // The shell function wraps `command copsy` and captures stdout, which makes
@@ -18,82 +20,72 @@ fn main() -> Result<()> {
     colored::control::set_override(true);
     console::set_colors_enabled(true);
     console::set_colors_enabled_stderr(true);
-    let cli = Cli::parse();
+    let Cli {
+        command,
+        transition: root_transition,
+    } = Cli::parse();
 
-    match cli.command {
-        None => commands::interactive::run(&cli.launch, &cli.carry, &cli.setup)?,
+    match command {
+        None => commands::interactive::run(&root_transition.resolve()?)?,
         Some(Command::New {
             branch,
             from,
-            launch,
-            carry,
-            setup,
-        }) => {
-            commands::add::run(
-                &branch,
-                commands::add::CreationKind::New,
-                from.as_deref(),
-                &launch,
-                &carry,
-                &setup,
-            )?;
-        }
-        Some(Command::Add {
-            branch,
-            launch,
-            carry,
-            setup,
-        }) => {
-            commands::add::run(
-                &branch,
-                commands::add::CreationKind::Add,
-                None,
-                &launch,
-                &carry,
-                &setup,
-            )?;
-        }
-        Some(Command::Switch {
-            name,
-            launch,
-            carry,
-            setup,
-        }) => {
-            commands::switch::run(name.as_deref(), &launch, &carry, &setup)?;
+            transition,
+        }) => commands::add::run(
+            &branch,
+            CreationKind::New,
+            from.as_deref(),
+            &root_transition.resolve_with(&transition)?,
+        )?,
+        Some(Command::Add { branch, transition }) => commands::add::run(
+            &branch,
+            CreationKind::Add,
+            None,
+            &root_transition.resolve_with(&transition)?,
+        )?,
+        Some(Command::Switch { name, transition }) => {
+            commands::switch::run(name.as_deref(), &root_transition.resolve_with(&transition)?)?
         }
         Some(Command::Remove {
             name,
             with_branch,
             all,
         }) => {
+            root_transition.ensure_unused("remove")?;
             commands::remove::run(name.as_deref(), with_branch, all)?;
         }
         Some(Command::List) => {
+            root_transition.ensure_unused("list")?;
             commands::list::run()?;
         }
         Some(Command::Status) => {
+            root_transition.ensure_unused("status")?;
             commands::status::run()?;
         }
         Some(Command::Close { with_branch }) => {
+            root_transition.ensure_unused("close")?;
             commands::close::run(with_branch)?;
         }
         Some(Command::Init { shell }) => {
+            root_transition.ensure_unused("init")?;
             commands::init::run(&shell)?;
         }
-        Some(Command::Pr {
-            target,
-            launch,
-            setup,
-        }) => {
-            commands::pr::run(target.as_deref(), &launch, &setup)?;
+        Some(Command::Pr { target, transition }) => {
+            commands::pr::run(target.as_deref(), &root_transition.resolve_pr(&transition)?)?
         }
         Some(Command::Config {
             command: ConfigCommand::Init,
         }) => {
+            root_transition.ensure_unused("config")?;
             commands::config::run_init()?;
         }
         Some(Command::Setup { execute }) => {
-            commands::setup::run(execute)?;
+            root_transition.ensure_unused("setup")?;
+            if execute {
+                commands::setup::execute_current()?;
+            } else {
+                commands::setup::request_current()?;
+            }
         }
     }
 

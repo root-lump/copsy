@@ -4,10 +4,13 @@
 
 use std::path::Path;
 
-const CD_MARKER: &str = "__COPSY_CD__";
-const LAUNCH_MARKER: &str = "__COPSY_LAUNCH__";
-const OPEN_MARKER: &str = "__COPSY_OPEN__";
-const SETUP_MARKER: &str = "__COPSY_SETUP__";
+pub(crate) const MARKER_NAMESPACE: &str = "__COPSY_";
+pub(crate) const CD_MARKER: &str = "__COPSY_CD__";
+pub(crate) const LAUNCH_MARKER: &str = "__COPSY_LAUNCH__";
+pub(crate) const OPEN_MARKER: &str = "__COPSY_OPEN__";
+pub(crate) const SETUP_MARKER: &str = "__COPSY_SETUP__";
+#[cfg(test)]
+pub(crate) const MARKERS: [&str; 4] = [CD_MARKER, LAUNCH_MARKER, OPEN_MARKER, SETUP_MARKER];
 
 pub fn request_cd(path: &Path) {
     println!("{CD_MARKER}{}", path.display());
