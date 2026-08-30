@@ -53,10 +53,15 @@ fn execute_actions(
         }
         Ok(())
     })();
-    if result.is_err() {
-        remove_created_paths(&created);
+    if let Err(error) = result {
+        return match remove_created_paths(&created) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(anyhow::anyhow!(
+                "{error:#}\nAdditionally, setup rollback failed: {rollback_error:#}"
+            )),
+        };
     }
-    result
+    Ok(())
 }
 
 fn copy_configured_path(
@@ -86,8 +91,12 @@ fn copy_configured_path(
     if let Err(error) =
         copy_entry(&source, &destination).with_context(|| format!("Failed to copy '{relative}'"))
     {
-        remove_created_paths(&created);
-        return Err(error);
+        return match remove_created_paths(&created) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(anyhow::anyhow!(
+                "{error:#}\nAdditionally, copy rollback failed: {rollback_error:#}"
+            )),
+        };
     }
     created.push(CreatedPath::Entry(destination));
     Ok(created)
@@ -136,7 +145,7 @@ fn create_safe_parent_directories(
         current.push(component.as_os_str());
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                remove_created_paths(&created);
+                remove_created_paths(&created)?;
                 bail!(
                     "Refusing to use symbolic-link ancestor {}",
                     current.display()
@@ -144,7 +153,7 @@ fn create_safe_parent_directories(
             }
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
-                remove_created_paths(&created);
+                remove_created_paths(&created)?;
                 bail!("Path ancestor {} is not a directory", current.display());
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -152,19 +161,19 @@ fn create_safe_parent_directories(
                     Ok(()) => created.push(CreatedPath::Parent(current.clone())),
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(error) => {
-                        remove_created_paths(&created);
+                        remove_created_paths(&created)?;
                         return Err(error.into());
                     }
                 }
                 let metadata = match fs::symlink_metadata(&current) {
                     Ok(metadata) => metadata,
                     Err(error) => {
-                        remove_created_paths(&created);
+                        remove_created_paths(&created)?;
                         return Err(error.into());
                     }
                 };
                 if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    remove_created_paths(&created);
+                    remove_created_paths(&created)?;
                     bail!(
                         "Path ancestor {} is not a safe directory",
                         current.display()
@@ -172,7 +181,7 @@ fn create_safe_parent_directories(
                 }
             }
             Err(error) => {
-                remove_created_paths(&created);
+                remove_created_paths(&created)?;
                 return Err(error.into());
             }
         }
@@ -180,24 +189,82 @@ fn create_safe_parent_directories(
     Ok(created)
 }
 
-fn remove_created_paths(paths: &[CreatedPath]) {
+fn remove_created_paths(paths: &[CreatedPath]) -> Result<()> {
+    let mut failures = Vec::new();
     for created in paths.iter().rev() {
         let path = created.path();
-        match (created, fs::symlink_metadata(path)) {
+        let removal = match (created, fs::symlink_metadata(path)) {
             (CreatedPath::Entry(_), Ok(metadata))
                 if metadata.is_dir() && !metadata.file_type().is_symlink() =>
             {
-                let _ = fs::remove_dir_all(path);
+                remove_directory_tree(path)
             }
-            (CreatedPath::Entry(_), Ok(_)) => {
-                let _ = fs::remove_file(path);
-            }
-            (CreatedPath::Parent(_), Ok(_)) => {
-                let _ = fs::remove_dir(path);
-            }
-            (_, Err(_)) => {}
+            (CreatedPath::Entry(_), Ok(_)) => remove_file_for_rollback(path),
+            (CreatedPath::Parent(_), Ok(_)) => fs::remove_dir(path),
+            (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            (_, Err(error)) => Err(error),
+        };
+        if let Err(error) = removal {
+            failures.push(format!("{}: {error}", path.display()));
         }
     }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", failures.join("; "))
+    }
+}
+
+fn remove_directory_tree(path: &Path) -> io::Result<()> {
+    prepare_tree_for_removal(path)?;
+    fs::remove_dir_all(path)
+}
+
+fn prepare_tree_for_removal(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return make_file_removable(path, metadata.permissions());
+    }
+
+    make_directory_removable(path, metadata.permissions())?;
+    for entry in fs::read_dir(path)? {
+        prepare_tree_for_removal(&entry?.path())?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_directory_removable(path: &Path, mut permissions: fs::Permissions) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    permissions.set_mode(permissions.mode() | 0o700);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn make_directory_removable(path: &Path, mut permissions: fs::Permissions) -> io::Result<()> {
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(unix)]
+fn make_file_removable(_path: &Path, _permissions: fs::Permissions) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_file_removable(path: &Path, mut permissions: fs::Permissions) -> io::Result<()> {
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)
+}
+
+fn remove_file_for_rollback(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    make_file_removable(path, metadata.permissions())?;
+    fs::remove_file(path)
 }
 
 enum CreatedPath {
@@ -246,10 +313,15 @@ fn copy_directory(source: &Path, destination: &Path, metadata: &fs::Metadata) ->
         }
         fs::set_permissions(destination, metadata.permissions())
     })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(destination);
+    if let Err(error) = result {
+        return match remove_directory_tree(destination) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(io::Error::other(format!(
+                "{error}; additionally, copy rollback failed: {rollback_error}"
+            ))),
+        };
     }
-    result
+    Ok(())
 }
 
 fn copy_file(source: &Path, destination: &Path, metadata: &fs::Metadata) -> io::Result<()> {
@@ -515,5 +587,25 @@ mod tests {
             fs::read_to_string(worktree.path().join(".env")).unwrap(),
             "worktree"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_removes_copied_read_only_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let main = tempdir().unwrap();
+        let worktree = tempdir().unwrap();
+        let locked = main.path().join("bundle/locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("file"), "main").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        let paths = [repository_path("bundle")];
+        let command = ["sh".to_string(), "-c".to_string(), "exit 7".to_string()];
+
+        assert!(execute_actions(main.path(), worktree.path(), &paths, Some(&command)).is_err());
+
+        assert!(!worktree.path().join("bundle").exists());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
