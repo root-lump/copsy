@@ -1,3 +1,4 @@
+use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,6 +49,23 @@ pub fn repo_root() -> Result<PathBuf> {
     git_output(&["rev-parse", "--show-toplevel"]).map(PathBuf::from)
 }
 
+pub fn git_common_dir() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    git_common_dir_in(&cwd)
+}
+
+fn git_common_dir_in(dir: &Path) -> Result<PathBuf> {
+    git_output_in(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .map(PathBuf::from)
+}
+
+pub fn repository_config_path() -> Result<PathBuf> {
+    Ok(git_common_dir()?.join("copsy.toml"))
+}
+
 // The first "worktree" entry in porcelain output is always the main worktree
 pub fn main_worktree_path() -> Result<PathBuf> {
     let stdout = git_output(&["worktree", "list", "--porcelain"])?;
@@ -96,6 +114,45 @@ pub fn list_worktrees() -> Result<Vec<WorktreeInfo>> {
     }
 
     Ok(worktrees)
+}
+
+pub fn list_ignored_paths(main_worktree: &Path) -> Result<Vec<RepositoryPath>> {
+    let output = Command::new("git")
+        .args([
+            "status",
+            "--ignored",
+            "--porcelain=v1",
+            "--untracked-files=normal",
+            "-z",
+        ])
+        .current_dir(main_worktree)
+        .output()
+        .context("Failed to list ignored files")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git status failed: {}", stderr.trim());
+    }
+    Ok(parse_ignored_paths(&output.stdout))
+}
+
+fn parse_ignored_paths(output: &[u8]) -> Vec<RepositoryPath> {
+    let mut paths = Vec::new();
+    for record in output.split(|byte| *byte == 0) {
+        let Some(path) = record.strip_prefix(b"!! ") else {
+            continue;
+        };
+        let Ok(path) = std::str::from_utf8(path) else {
+            crate::info!("Warning: skipped a non-UTF-8 ignored path");
+            continue;
+        };
+        let path = path.trim_end_matches('/');
+        if let Ok(path) = RepositoryPath::new(path) {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 pub fn worktree_dir_name(repo_root: &Path, branch: &str, base_dir: Option<&Path>) -> PathBuf {
@@ -359,7 +416,9 @@ pub fn list_prs() -> Result<Vec<(String, String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
+    use tempfile::tempdir;
 
     #[test]
     fn worktree_dir_name_basic() {
@@ -398,5 +457,93 @@ mod tests {
     fn extract_pr_number_invalid() {
         assert!(extract_pr_number("not-a-number").is_err());
         assert!(extract_pr_number("https://github.com/owner/repo/issues/123").is_err());
+    }
+
+    #[test]
+    fn parses_ignored_paths_without_filtering_generated_directories() {
+        let output = b"!! .env\0!! node_modules/\0!! target/\0?? untracked\0";
+        assert_eq!(
+            parse_ignored_paths(output),
+            vec![
+                RepositoryPath::new(".env").unwrap(),
+                RepositoryPath::new("node_modules").unwrap(),
+                RepositoryPath::new("target").unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_paths_exclude_git_and_unsafe_paths() {
+        let output = b"!! .git/\0!! nested/.git/config\0!! ../outside\0!! safe/file\0";
+        assert_eq!(
+            parse_ignored_paths(output),
+            vec![RepositoryPath::new("safe/file").unwrap()]
+        );
+    }
+
+    #[test]
+    fn linked_worktrees_share_the_git_common_dir() {
+        let root = tempdir().unwrap();
+        let main = root.path().join("main");
+        let linked = root.path().join("linked");
+        fs::create_dir(&main).unwrap();
+        run_git(&main, &["init", "-q"]);
+        fs::write(main.join("README.md"), "test").unwrap();
+        run_git(&main, &["add", "README.md"]);
+        run_git(
+            &main,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "initial",
+            ],
+        );
+        run_git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+            ],
+        );
+
+        assert_eq!(
+            git_common_dir_in(&main).unwrap(),
+            git_common_dir_in(&linked).unwrap()
+        );
+    }
+
+    #[test]
+    fn discovers_ignored_files_and_directories() {
+        let repository = tempdir().unwrap();
+        run_git(repository.path(), &["init", "-q"]);
+        fs::write(repository.path().join(".gitignore"), ".env\n/target/\n").unwrap();
+        fs::write(repository.path().join(".env"), "secret").unwrap();
+        fs::create_dir(repository.path().join("target")).unwrap();
+        fs::write(repository.path().join("target/cache"), "cache").unwrap();
+
+        assert_eq!(
+            list_ignored_paths(repository.path()).unwrap(),
+            vec![
+                RepositoryPath::new(".env").unwrap(),
+                RepositoryPath::new("target").unwrap(),
+            ]
+        );
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {} failed", args.join(" "));
     }
 }

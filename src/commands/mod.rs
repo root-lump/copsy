@@ -1,9 +1,12 @@
 pub mod add;
 pub mod close;
+pub mod config;
 pub mod init;
 pub mod interactive;
 pub mod list;
 pub mod pr;
 pub mod remove;
+pub mod setup;
 pub mod status;
 pub mod switch;
+pub mod worktree;

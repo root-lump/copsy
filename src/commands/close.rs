@@ -30,7 +30,8 @@ pub fn run(with_branch: bool) -> Result<()> {
     let branch = current_wt.branch.clone();
 
     info!("Closing worktree '{branch}'...");
-    // cd to main before removal — the shell function processes markers in order
+    // Relocate the parent shell as soon as this captured command completes,
+    // because its current directory is removed below.
     output::request_cd(&main_path);
     git::remove_worktree(&wt_path)?;
     if with_branch {

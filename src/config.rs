@@ -1,61 +1,216 @@
-use anyhow::Result;
+use crate::git;
+use crate::repository_path::RepositoryPath;
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::path::PathBuf;
+use serde::de::DeserializeOwned;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-#[derive(Deserialize, Default)]
+#[derive(Default)]
 pub struct Config {
-    pub worktree: Option<WorktreeConfig>,
+    base_dir: Option<String>,
+    carry_changes: bool,
+    setup: Option<SetupConfig>,
 }
 
-#[derive(Deserialize, Default)]
-pub struct WorktreeConfig {
-    pub base_dir: Option<String>,
-    pub carry_changes: Option<bool>,
+pub struct SetupConfig {
+    auto: Vec<SetupTrigger>,
+    command: Option<Vec<String>>,
+    copy_from_main: Vec<RepositoryPath>,
+}
+
+impl SetupConfig {
+    pub fn command(&self) -> Option<&[String]> {
+        self.command.as_deref()
+    }
+
+    pub fn copy_from_main(&self) -> &[RepositoryPath] {
+        &self.copy_from_main
+    }
+
+    fn runs_automatically_for(&self, trigger: SetupTrigger) -> bool {
+        self.auto.contains(&trigger)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SetupTrigger {
+    New,
+    Add,
+    Pr,
+}
+
+impl SetupTrigger {
+    pub const ALL: [Self; 3] = [Self::New, Self::Add, Self::Pr];
+
+    pub fn config_value(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Add => "add",
+            Self::Pr => "pr",
+        }
+    }
+
+    pub fn prompt_label(self) -> &'static str {
+        match self {
+            Self::New => "copsy new",
+            Self::Add => "copsy add",
+            Self::Pr => "copsy pr (may execute untrusted code)",
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct GlobalConfig {
+    worktree: Option<GlobalWorktreeConfig>,
+}
+
+#[derive(Default, Deserialize)]
+struct GlobalWorktreeConfig {
+    base_dir: Option<String>,
+    carry_changes: Option<bool>,
+}
+
+#[derive(Default, Deserialize)]
+struct RepositoryConfig {
+    worktree: Option<RepositoryWorktreeConfig>,
+    setup: Option<RawSetupConfig>,
+}
+
+#[derive(Default, Deserialize)]
+struct RepositoryWorktreeConfig {
+    base_dir: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct RawSetupConfig {
+    #[serde(default)]
+    auto: Vec<SetupTrigger>,
+    command: Option<Vec<String>>,
+    #[serde(default)]
+    copy_from_main: Vec<String>,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let path = config_path();
-        if !path.exists() {
-            return Ok(Self::default());
+        let repository_path = git::repository_config_path()?;
+        Self::load_from_paths(&global_config_path(), &repository_path)
+    }
+
+    pub fn load_global() -> Result<Self> {
+        let global = read_optional::<GlobalConfig>(&global_config_path())?;
+        Ok(Self::from_global(global))
+    }
+
+    fn load_from_paths(global_path: &Path, repository_path: &Path) -> Result<Self> {
+        let global = read_optional::<GlobalConfig>(global_path)?;
+        let repository = read_optional::<RepositoryConfig>(repository_path)?;
+        Self::from_raw(global, repository)
+    }
+
+    fn from_global(global: GlobalConfig) -> Self {
+        let worktree = global.worktree.unwrap_or_default();
+        Self {
+            base_dir: worktree.base_dir,
+            carry_changes: worktree.carry_changes.unwrap_or(false),
+            setup: None,
         }
-        let content = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
+    }
+
+    fn from_raw(global: GlobalConfig, repository: RepositoryConfig) -> Result<Self> {
+        let mut config = Self::from_global(global);
+        if let Some(base_dir) = repository.worktree.and_then(|worktree| worktree.base_dir) {
+            config.base_dir = Some(base_dir);
+        }
+        config.setup = repository.setup.map(resolve_setup).transpose()?;
         Ok(config)
     }
 
     pub fn carry_changes(&self) -> bool {
-        self.worktree
-            .as_ref()
-            .and_then(|w| w.carry_changes)
-            .unwrap_or(false)
+        self.carry_changes
     }
 
     pub fn base_dir(&self) -> Option<PathBuf> {
-        self.worktree
+        self.base_dir
             .as_ref()
-            .and_then(|w| w.base_dir.as_ref())
-            .map(|d| {
-                let expanded = shellexpand_tilde(d);
-                PathBuf::from(expanded)
-            })
+            .map(|directory| PathBuf::from(expand_tilde(directory)))
+    }
+
+    pub fn base_dir_raw(&self) -> Option<&str> {
+        self.base_dir.as_deref()
+    }
+
+    pub fn setup(&self) -> Option<&SetupConfig> {
+        self.setup.as_ref()
+    }
+
+    pub fn auto_setup(&self, trigger: SetupTrigger) -> bool {
+        self.setup
+            .as_ref()
+            .is_some_and(|setup| setup.runs_automatically_for(trigger))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_auto_setup(auto: Vec<SetupTrigger>) -> Self {
+        Self {
+            setup: Some(SetupConfig {
+                auto,
+                command: None,
+                copy_from_main: Vec::new(),
+            }),
+            ..Self::default()
+        }
     }
 }
 
-// Use XDG_CONFIG_HOME or ~/.config instead of dirs::config_dir(),
-// which returns ~/Library/Application Support on macOS
-fn config_path() -> PathBuf {
-    let xdg_config = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".config")
-        });
-    xdg_config.join("copsy").join("config.toml")
+fn resolve_setup(raw: RawSetupConfig) -> Result<SetupConfig> {
+    if raw.command.as_ref().is_some_and(Vec::is_empty) {
+        bail!("setup.command must contain at least one argument");
+    }
+    let copy_from_main = raw
+        .copy_from_main
+        .into_iter()
+        .map(|path| {
+            RepositoryPath::new(path.clone())
+                .with_context(|| format!("Invalid setup.copy_from_main path '{path}'"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SetupConfig {
+        auto: raw.auto,
+        command: raw.command,
+        copy_from_main,
+    })
 }
 
-pub(crate) fn shellexpand_tilde(path: &str) -> String {
+fn read_optional<T>(path: &Path) -> Result<T>
+where
+    T: Default + DeserializeOwned,
+{
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))
+}
+
+// Use XDG_CONFIG_HOME or ~/.config instead of dirs::config_dir(),
+// which returns ~/Library/Application Support on macOS.
+pub(crate) fn global_config_path() -> PathBuf {
+    config_home(std::env::var_os("XDG_CONFIG_HOME"), dirs::home_dir())
+        .join("copsy")
+        .join("config.toml")
+}
+
+fn config_home(xdg_config_home: Option<OsString>, home: Option<PathBuf>) -> PathBuf {
+    xdg_config_home
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.unwrap_or_else(|| PathBuf::from(".")).join(".config"))
+}
+
+pub(crate) fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
         && let Some(home) = dirs::home_dir()
     {
@@ -67,58 +222,147 @@ pub(crate) fn shellexpand_tilde(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
-    fn shellexpand_tilde_expands_home() {
-        let result = shellexpand_tilde("~/projects");
+    fn expand_tilde_expands_home() {
+        let result = expand_tilde("~/projects");
         assert!(!result.starts_with("~/"));
         assert!(result.ends_with("/projects"));
     }
 
     #[test]
-    fn shellexpand_tilde_leaves_absolute_path() {
-        assert_eq!(shellexpand_tilde("/usr/local"), "/usr/local");
+    fn expand_tilde_leaves_other_paths_unchanged() {
+        assert_eq!(expand_tilde("/usr/local"), "/usr/local");
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
     }
 
     #[test]
-    fn shellexpand_tilde_leaves_relative_path() {
-        assert_eq!(shellexpand_tilde("relative/path"), "relative/path");
+    fn config_home_accepts_only_absolute_xdg_paths() {
+        let home = PathBuf::from("/home/example");
+        assert_eq!(
+            config_home(Some(OsString::from("/custom/config")), Some(home.clone())),
+            PathBuf::from("/custom/config")
+        );
+        assert_eq!(
+            config_home(Some(OsString::new()), Some(home.clone())),
+            home.join(".config")
+        );
+        assert_eq!(
+            config_home(Some(OsString::from("relative/config")), Some(home.clone())),
+            home.join(".config")
+        );
+        assert_eq!(config_home(None, Some(home.clone())), home.join(".config"));
     }
 
     #[test]
-    fn config_deserialize_empty() {
-        let config: Config = toml::from_str("").unwrap();
-        assert!(config.worktree.is_none());
+    fn empty_configuration_uses_defaults() {
+        let config = Config::default();
         assert!(config.base_dir().is_none());
-    }
-
-    #[test]
-    fn config_carry_changes_default_false() {
-        let config: Config = toml::from_str("").unwrap();
         assert!(!config.carry_changes());
+        assert!(config.setup().is_none());
     }
 
     #[test]
-    fn config_carry_changes_explicit() {
-        let config: Config = toml::from_str(
+    fn loads_and_merges_global_and_repository_files() {
+        let directory = tempdir().unwrap();
+        let global = directory.path().join("global.toml");
+        let repository = directory.path().join("repository.toml");
+        fs::write(
+            &global,
             r#"
             [worktree]
+            base_dir = "/global"
             carry_changes = true
             "#,
         )
         .unwrap();
-        assert!(config.carry_changes());
-    }
-
-    #[test]
-    fn config_deserialize_with_base_dir() {
-        let config: Config = toml::from_str(
+        fs::write(
+            &repository,
             r#"
             [worktree]
-            base_dir = "/tmp/worktrees"
+            base_dir = "/repository"
+            [setup]
+            auto = ["new", "pr"]
+            command = ["npm", "install"]
+            copy_from_main = [".env"]
             "#,
         )
         .unwrap();
-        assert_eq!(config.base_dir(), Some(PathBuf::from("/tmp/worktrees")));
+
+        let config = Config::load_from_paths(&global, &repository).unwrap();
+
+        assert_eq!(config.base_dir(), Some(PathBuf::from("/repository")));
+        assert!(config.carry_changes());
+        assert!(config.auto_setup(SetupTrigger::New));
+        assert!(config.auto_setup(SetupTrigger::Pr));
+        assert_eq!(
+            config.setup().unwrap().command().unwrap(),
+            ["npm", "install"]
+        );
+        assert_eq!(
+            config.setup().unwrap().copy_from_main(),
+            [RepositoryPath::new(".env").unwrap()]
+        );
+    }
+
+    #[test]
+    fn repository_without_base_dir_inherits_global() {
+        let global: GlobalConfig = toml::from_str(
+            r#"
+            [worktree]
+            base_dir = "/global"
+            "#,
+        )
+        .unwrap();
+        let repository: RepositoryConfig = toml::from_str("[setup]").unwrap();
+
+        let config = Config::from_raw(global, repository).unwrap();
+
+        assert_eq!(config.base_dir(), Some(PathBuf::from("/global")));
+    }
+
+    #[test]
+    fn global_setup_table_is_ignored_without_parsing_its_values() {
+        let global: GlobalConfig = toml::from_str(
+            r#"
+            [worktree]
+            carry_changes = true
+            [setup]
+            auto = ["not-a-trigger"]
+            command = []
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::from_global(global);
+
+        assert!(config.carry_changes());
+        assert!(config.setup().is_none());
+    }
+
+    #[test]
+    fn rejects_empty_setup_command() {
+        let repository: RepositoryConfig = toml::from_str(
+            r#"
+            [setup]
+            command = []
+            "#,
+        )
+        .unwrap();
+        assert!(Config::from_raw(GlobalConfig::default(), repository).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_copy_paths_during_resolution() {
+        let repository: RepositoryConfig = toml::from_str(
+            r#"
+            [setup]
+            copy_from_main = ["nested/.git/config"]
+            "#,
+        )
+        .unwrap();
+        assert!(Config::from_raw(GlobalConfig::default(), repository).is_err());
     }
 }

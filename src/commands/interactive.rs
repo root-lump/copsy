@@ -1,15 +1,14 @@
-use crate::cli::{CarryFlags, LaunchFlags};
+use crate::cli::TransitionOptions;
 use crate::commands::add;
+use crate::commands::worktree::{self, CreationKind, SetupContext};
 use crate::config::Config;
 use crate::git;
 use crate::info;
-use crate::launcher;
-use crate::output;
 use crate::theme;
 use anyhow::Result;
 use colored::Colorize;
 
-pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
+pub fn run(options: &TransitionOptions) -> Result<()> {
     let (worktrees, local_branches, remote_branches) =
         crate::spinner::with_spinner("Loading branches...", || {
             let wt = git::list_worktrees();
@@ -67,18 +66,11 @@ pub fn run(launch: &LaunchFlags, carry: &CarryFlags) -> Result<()> {
     match &items[selection].1 {
         ItemKind::ExistingWorktree(path) => {
             let config = Config::load()?;
-            let should_carry = carry.should_carry(config.carry_changes());
-            let current_dir = std::env::current_dir()?;
-            let stash_tag = git::carry_stash(&current_dir, should_carry)?;
-
             info!("{}", "Switching to worktree".green());
-            output::request_cd(path);
-
-            git::carry_unstash(path, &stash_tag);
-            launcher::launch_tools(launch, path);
+            worktree::transition(path, &config, options, SetupContext::Existing, || Ok(()))?;
         }
         ItemKind::NewWorktree(branch) => {
-            add::run(branch, false, None, launch, carry)?;
+            add::run(branch, CreationKind::Add, None, options)?;
         }
     }
 
