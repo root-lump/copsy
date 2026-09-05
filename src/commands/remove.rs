@@ -4,7 +4,7 @@ use crate::output;
 use crate::theme;
 use anyhow::{Result, bail};
 
-pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
+pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Result<()> {
     let worktrees = git::list_worktrees()?;
     let main_path = git::main_worktree_path()?;
     let removable: Vec<_> = worktrees
@@ -18,41 +18,51 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
 
     if all {
         let current_dir = std::env::current_dir().ok();
-        let in_removable = current_dir
+        let current_wt = current_dir
             .as_ref()
-            .is_some_and(|cd| removable.iter().any(|w| cd.starts_with(&w.path)));
+            .and_then(|cd| removable.iter().find(|w| cd.starts_with(&w.path)));
 
-        if in_removable {
-            output::request_cd(&main_path);
-        }
-
-        let mut errors = Vec::new();
+        let mut failed_worktrees = Vec::new();
+        let mut failed_branches = Vec::new();
         for wt in &removable {
             info!("Removing worktree '{}'...", wt.branch);
-            if let Err(e) = git::remove_worktree(&wt.path) {
+            if let Err(e) = git::remove_worktree(&main_path, &wt.path, force) {
                 info!("Warning: failed to remove '{}': {e}", wt.branch);
-                errors.push(wt.branch.clone());
+                failed_worktrees.push(wt.path.clone());
                 continue;
             }
             if with_branch && !wt.branch.is_empty() {
                 info!("Deleting local branch '{}'...", wt.branch);
-                if let Err(e) = git::delete_local_branch(&wt.branch) {
+                if let Err(e) = git::delete_local_branch(&main_path, &wt.branch, force) {
                     info!("Warning: failed to delete branch '{}': {e}", wt.branch);
+                    failed_branches.push(wt.branch.clone());
                 }
             }
         }
 
-        if errors.is_empty() {
-            info!("Done. Removed {} worktree(s).", removable.len());
-        } else {
-            info!(
-                "Done with errors. {} removed, {} failed.",
-                removable.len() - errors.len(),
-                errors.len()
-            );
+        // Relocate the parent shell only when its worktree is really gone;
+        // moving it out of a directory that survived would hide the failure.
+        if let Some(wt) = current_wt
+            && !failed_worktrees.contains(&wt.path)
+        {
+            output::request_cd(&main_path);
         }
 
-        return Ok(());
+        let removed = removable.len() - failed_worktrees.len();
+        if failed_worktrees.is_empty() && failed_branches.is_empty() {
+            info!("Done. Removed {removed} worktree(s).");
+            return Ok(());
+        }
+
+        if !force {
+            info!("Retry with --force to discard uncommitted changes and unmerged branches.");
+        }
+        bail!(
+            "Removed {removed} of {} worktree(s); {} removal(s) and {} branch deletion(s) failed.",
+            removable.len(),
+            failed_worktrees.len(),
+            failed_branches.len()
+        );
     }
 
     let target = match name {
@@ -82,23 +92,25 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool) -> Result<()> {
         .is_some_and(|cd| cd.starts_with(&target.path));
 
     if is_current {
-        let status = git::get_status(&target.path)?;
-        if !status.is_empty() {
-            info!("Warning: worktree has uncommitted changes:");
-            for line in status.lines() {
-                info!("  {line}");
+        if !force {
+            let status = git::get_status(&target.path)?;
+            if !status.is_empty() {
+                info!("Warning: worktree has uncommitted changes:");
+                for line in status.lines() {
+                    info!("  {line}");
+                }
+                bail!("Commit or stash changes before removing, or pass --force.");
             }
-            bail!("Commit or stash changes before removing.");
         }
         output::request_cd(&main_path);
     }
 
     let branch = target.branch.clone();
     info!("Removing worktree '{branch}'...");
-    git::remove_worktree(&target.path)?;
+    git::remove_worktree(&main_path, &target.path, force)?;
     if with_branch && !branch.is_empty() {
         info!("Deleting local branch '{branch}'...");
-        git::delete_local_branch(&branch)?;
+        git::delete_local_branch(&main_path, &branch, force)?;
     }
     info!("Done.");
 

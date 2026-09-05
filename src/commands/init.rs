@@ -197,7 +197,7 @@ _copsy() {
                     _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
                     ;;
                 remove|rm)
-                    _arguments -s -S '--with-branch[Also delete the local branch]' '--all[Remove all worktrees]' '1:worktree:_copsy_worktrees' && ret=0
+                    _arguments -s -S '--with-branch[Also delete the local branch]' '--all[Remove all worktrees]' '--force[Discard uncommitted changes and delete unmerged branches]' '1:worktree:_copsy_worktrees' && ret=0
                     ;;
                 pr)
                     _arguments -s -S $launch_flags $setup_flags '1:PR number or URL:' && ret=0
@@ -295,7 +295,7 @@ _copsy_bash() {
             ;;
         remove|rm)
             if [[ "${cur}" == -* ]]; then
-                COMPREPLY=($(compgen -W "--with-branch --all" -- "${cur}"))
+                COMPREPLY=($(compgen -W "--with-branch --all --force" -- "${cur}"))
             else
                 local worktrees
                 worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"

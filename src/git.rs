@@ -184,13 +184,24 @@ pub fn add_worktree(
     }
 }
 
-pub fn remove_worktree(path: &Path) -> Result<()> {
+// Both run from the main worktree rather than the inherited current directory:
+// the caller may be standing in the worktree being removed, and git aborts with
+// "Unable to read current working directory" once that directory is gone.
+// git_output (not git_run) keeps git's stdout out of the shell function's marker
+// stream and folds its stderr into the error, so callers can report the reason.
+pub fn remove_worktree(main_worktree: &Path, path: &Path, force: bool) -> Result<()> {
     let path_str = path.to_str().context("Invalid path")?;
-    git_run(&["worktree", "remove", path_str])
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(path_str);
+    git_output_in(main_worktree, &args).map(|_| ())
 }
 
-pub fn delete_local_branch(branch: &str) -> Result<()> {
-    git_run(&["branch", "-d", branch])
+pub fn delete_local_branch(main_worktree: &Path, branch: &str, force: bool) -> Result<()> {
+    let flag = if force { "-D" } else { "-d" };
+    git_output_in(main_worktree, &["branch", flag, branch]).map(|_| ())
 }
 
 pub fn has_changes(path: &Path) -> Result<bool> {
@@ -536,6 +547,73 @@ mod tests {
                 RepositoryPath::new("target").unwrap(),
             ]
         );
+    }
+
+    #[test]
+    fn refuses_to_remove_a_dirty_worktree_unless_forced() {
+        let root = tempdir().unwrap();
+        let (main, linked) = init_repository_with_worktree(root.path());
+        fs::write(linked.join("scratch.txt"), "work in progress").unwrap();
+
+        assert!(remove_worktree(&main, &linked, false).is_err());
+        assert!(linked.exists());
+
+        remove_worktree(&main, &linked, true).unwrap();
+        assert!(!linked.exists());
+    }
+
+    // Removing the worktree the process is standing in destroys its current
+    // directory, and git aborts with "Unable to read current working directory"
+    // unless it is run from somewhere that outlives the removal.
+    #[test]
+    fn removes_the_worktree_holding_the_current_directory() {
+        let root = tempdir().unwrap();
+        let (main, linked) = init_repository_with_worktree(root.path());
+
+        // The other tests never read the process-wide current directory, so
+        // moving it here is safe despite tests running in parallel.
+        let restore = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&linked).unwrap();
+        let removed = remove_worktree(&main, &linked, false);
+        let deleted = delete_local_branch(&main, "feature", false);
+        std::env::set_current_dir(restore).unwrap();
+
+        removed.unwrap();
+        deleted.unwrap();
+        assert!(!linked.exists());
+    }
+
+    fn init_repository_with_worktree(root: &Path) -> (PathBuf, PathBuf) {
+        let main = root.join("main");
+        let linked = root.join("linked");
+        fs::create_dir(&main).unwrap();
+        run_git(&main, &["init", "-q"]);
+        fs::write(main.join("README.md"), "test").unwrap();
+        run_git(&main, &["add", "README.md"]);
+        run_git(
+            &main,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "initial",
+            ],
+        );
+        run_git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+            ],
+        );
+        (main, linked)
     }
 
     fn run_git(dir: &Path, args: &[&str]) {

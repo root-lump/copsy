@@ -45,6 +45,9 @@ pub enum Command {
         /// Remove all worktrees
         #[arg(long)]
         all: bool,
+        /// Discard uncommitted changes and delete unmerged branches
+        #[arg(long)]
+        force: bool,
     },
     /// List all worktrees
     #[command(visible_alias = "ls")]
