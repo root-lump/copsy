@@ -33,10 +33,10 @@ pub fn run(with_branch: bool) -> Result<()> {
     // Relocate the parent shell as soon as this captured command completes,
     // because its current directory is removed below.
     output::request_cd(&main_path);
-    git::remove_worktree(&wt_path)?;
+    git::remove_worktree(&main_path, &wt_path, false)?;
     if with_branch {
         info!("Deleting local branch '{branch}'...");
-        git::delete_local_branch(&branch)?;
+        git::delete_local_branch(&main_path, &branch, false)?;
     }
     info!("Done.");
 

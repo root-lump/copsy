@@ -50,9 +50,10 @@ fn main() -> Result<()> {
             name,
             with_branch,
             all,
+            force,
         }) => {
             root_transition.ensure_unused("remove")?;
-            commands::remove::run(name.as_deref(), with_branch, all)?;
+            commands::remove::run(name.as_deref(), with_branch, all, force)?;
         }
         Some(Command::List) => {
             root_transition.ensure_unused("list")?;
