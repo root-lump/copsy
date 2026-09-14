@@ -123,14 +123,14 @@ default.
 
 ```toml
 [worktree]
-# Directory where worktrees are created (default: parent of repo root)
+# Directory where worktrees are created (default: parent of the main worktree)
 # Supports ~ expansion
 base_dir = "~/worktrees"
 # Carry uncommitted changes when switching worktrees
 carry_changes = true
 ```
 
-Without `base_dir`, worktrees are created alongside the repository directory, named `<repo>-<branch>`.
+Without `base_dir`, worktrees are created alongside the main worktree, named `<repo>-<branch>`.
 
 The command is create-only and will not overwrite an existing configuration.
 
@@ -182,9 +182,16 @@ bash` so the shell wrapper recognizes setup requests.
 
 Worktrees are named `<repo>-<branch>`, with `/` in branch names replaced by `-`.
 
+`<repo>` comes from the `origin` remote URL, so it stays the same even if the
+clone directory is renamed. Without an `origin` remote, the main worktree's
+directory name is used instead.
+
 Examples:
 - Repository `myapp`, branch `feature/login` → `myapp-feature-login`
 - Repository `myapp`, branch `fix-typo` → `myapp-fix-typo`
+
+Worktrees are always placed next to the main worktree (or under `base_dir`),
+including when `copsy new` or `copsy add` is run from inside another worktree.
 
 ## License
 
