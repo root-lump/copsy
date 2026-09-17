@@ -134,8 +134,8 @@ carry_changes = true
 
 Without `base_dir`, worktrees are created alongside the main worktree. The
 `flat` layout names each one `<repo>-<branch>`; the `nested` layout groups them
-under a `<repo>-worktrees` directory instead, because `<repo>` is already the
-main worktree in a default clone.
+under a `<repo>` directory, which becomes `<repo>-worktrees` when `<repo>` is
+the main worktree itself — the case in a default clone.
 
 The command is create-only and will not overwrite an existing configuration.
 
@@ -203,9 +203,11 @@ shared `base_dir` grouped by repository:
 - Repository `myapp`, branch `fix-typo` → `myapp/fix-typo`
 
 When that `<repo>` directory would be the main worktree itself, `-worktrees` is
-appended to it. `git clone` checks out into a directory named after the
-repository, so this is what happens whenever `base_dir` is unset:
+appended to it. This occurs when `base_dir` is unset and the main worktree's
+directory name matches the repository name, which is how `git clone` leaves it
+by default:
 - Main worktree `~/dev/myapp`, branch `fix-typo` → `~/dev/myapp-worktrees/fix-typo`
+- Main worktree `~/dev/myapp-main`, branch `fix-typo` → `~/dev/myapp/fix-typo`
 
 The directory holding the nested worktrees is removed once its last worktree is
 gone.
