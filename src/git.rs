@@ -1,3 +1,4 @@
+use crate::config::WorktreeLayout;
 use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -187,16 +188,50 @@ fn repository_name_from_url(url: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+fn worktree_parent_dir<'a>(main_worktree: &'a Path, base_dir: Option<&'a Path>) -> &'a Path {
+    base_dir.unwrap_or_else(|| main_worktree.parent().unwrap_or(main_worktree))
+}
+
+/// Directory that holds every worktree of this repository in the nested layout.
+///
+/// Falls back to a `-worktrees` suffix when the repository-name directory would
+/// be the main worktree itself: `git clone` checks out into a directory named
+/// after the repository, so without `base_dir` the two collide and worktrees
+/// would land inside the main worktree.
+pub fn nested_repository_dir(
+    repo_name: &str,
+    main_worktree: &Path,
+    base_dir: Option<&Path>,
+) -> PathBuf {
+    let parent = worktree_parent_dir(main_worktree, base_dir);
+    let repository_dir = parent.join(repo_name);
+    if repository_dir == main_worktree {
+        parent.join(format!("{repo_name}-worktrees"))
+    } else {
+        repository_dir
+    }
+}
+
+/// Absolute path of the worktree directory for `branch`.
+///
+/// Slashes in the branch name are flattened to `-` in both layouts, so the
+/// directory tree is never deeper than the layout itself prescribes.
 pub fn worktree_dir_name(
     repo_name: &str,
     main_worktree: &Path,
     branch: &str,
     base_dir: Option<&Path>,
+    layout: WorktreeLayout,
 ) -> PathBuf {
     let sanitized = branch.replace('/', "-");
-    let dir_name = format!("{repo_name}-{sanitized}");
-    let parent = base_dir.unwrap_or_else(|| main_worktree.parent().unwrap_or(main_worktree));
-    parent.join(dir_name)
+    match layout {
+        WorktreeLayout::Flat => {
+            worktree_parent_dir(main_worktree, base_dir).join(format!("{repo_name}-{sanitized}"))
+        }
+        WorktreeLayout::Nested => {
+            nested_repository_dir(repo_name, main_worktree, base_dir).join(sanitized)
+        }
+    }
 }
 
 pub fn add_worktree(
@@ -467,7 +502,13 @@ mod tests {
     #[test]
     fn worktree_dir_name_basic() {
         let main_worktree = Path::new("/home/user/myapp");
-        let result = worktree_dir_name("myapp", main_worktree, "feature/login", None);
+        let result = worktree_dir_name(
+            "myapp",
+            main_worktree,
+            "feature/login",
+            None,
+            WorktreeLayout::Flat,
+        );
         assert_eq!(result, Path::new("/home/user/myapp-feature-login"));
     }
 
@@ -475,22 +516,118 @@ mod tests {
     fn worktree_dir_name_with_base_dir() {
         let main_worktree = Path::new("/home/user/myapp");
         let base = Path::new("/tmp/worktrees");
-        let result = worktree_dir_name("myapp", main_worktree, "fix-typo", Some(base));
+        let result = worktree_dir_name(
+            "myapp",
+            main_worktree,
+            "fix-typo",
+            Some(base),
+            WorktreeLayout::Flat,
+        );
         assert_eq!(result, Path::new("/tmp/worktrees/myapp-fix-typo"));
     }
 
     #[test]
     fn worktree_dir_name_nested_slashes() {
         let main_worktree = Path::new("/repo");
-        let result = worktree_dir_name("repo", main_worktree, "feat/ui/header", None);
+        let result = worktree_dir_name(
+            "repo",
+            main_worktree,
+            "feat/ui/header",
+            None,
+            WorktreeLayout::Flat,
+        );
         assert_eq!(result, Path::new("/repo-feat-ui-header"));
     }
 
     #[test]
     fn worktree_dir_name_ignores_the_main_worktree_directory_name() {
         let main_worktree = Path::new("/home/user/myapp-main");
-        let result = worktree_dir_name("myapp", main_worktree, "feat/ui", None);
+        let result = worktree_dir_name(
+            "myapp",
+            main_worktree,
+            "feat/ui",
+            None,
+            WorktreeLayout::Flat,
+        );
         assert_eq!(result, Path::new("/home/user/myapp-feat-ui"));
+    }
+
+    #[test]
+    fn worktree_dir_name_nested_layout_with_base_dir() {
+        let main_worktree = Path::new("/home/user/myapp");
+        let base = Path::new("/tmp/worktrees");
+        let result = worktree_dir_name(
+            "myapp",
+            main_worktree,
+            "fix-typo",
+            Some(base),
+            WorktreeLayout::Nested,
+        );
+        assert_eq!(result, Path::new("/tmp/worktrees/myapp/fix-typo"));
+    }
+
+    #[test]
+    fn worktree_dir_name_nested_layout_without_base_dir() {
+        let main_worktree = Path::new("/home/user/myapp-main");
+        let result = worktree_dir_name(
+            "myapp",
+            main_worktree,
+            "fix-typo",
+            None,
+            WorktreeLayout::Nested,
+        );
+        assert_eq!(result, Path::new("/home/user/myapp/fix-typo"));
+    }
+
+    #[test]
+    fn worktree_dir_name_nested_layout_flattens_branch_slashes() {
+        let main_worktree = Path::new("/home/user/myapp-main");
+        let result = worktree_dir_name(
+            "myapp",
+            main_worktree,
+            "feat/ui/header",
+            None,
+            WorktreeLayout::Nested,
+        );
+        assert_eq!(result, Path::new("/home/user/myapp/feat-ui-header"));
+    }
+
+    #[test]
+    fn nested_repository_dir_avoids_the_main_worktree() {
+        let main_worktree = Path::new("/home/user/myapp");
+        assert_eq!(
+            nested_repository_dir("myapp", main_worktree, None),
+            Path::new("/home/user/myapp-worktrees")
+        );
+        assert_eq!(
+            worktree_dir_name(
+                "myapp",
+                main_worktree,
+                "feat/sample",
+                None,
+                WorktreeLayout::Nested
+            ),
+            Path::new("/home/user/myapp-worktrees/feat-sample")
+        );
+    }
+
+    #[test]
+    fn nested_repository_dir_keeps_the_repository_name_when_nothing_collides() {
+        let main_worktree = Path::new("/home/user/myapp-main");
+        assert_eq!(
+            nested_repository_dir("myapp", main_worktree, None),
+            Path::new("/home/user/myapp")
+        );
+    }
+
+    #[test]
+    fn nested_repository_dir_avoids_a_main_worktree_directly_below_base_dir() {
+        let main_worktree = Path::new("/tmp/worktrees/myapp");
+        let base = Path::new("/tmp/worktrees");
+        assert_eq!(
+            nested_repository_dir("myapp", main_worktree, Some(base)),
+            Path::new("/tmp/worktrees/myapp-worktrees")
+        );
     }
 
     #[test]

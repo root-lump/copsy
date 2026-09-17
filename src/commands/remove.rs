@@ -1,3 +1,5 @@
+use crate::commands::worktree;
+use crate::config::Config;
 use crate::git;
 use crate::info;
 use crate::output;
@@ -7,6 +9,13 @@ use anyhow::{Result, bail};
 pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Result<()> {
     let worktrees = git::list_worktrees()?;
     let main_path = git::main_worktree_path()?;
+    let config = Config::load()?;
+    let layout = config.layout();
+    let repository_dir = git::nested_repository_dir(
+        &git::repository_name(&main_path),
+        &main_path,
+        config.base_dir().as_deref(),
+    );
     let removable: Vec<_> = worktrees
         .iter()
         .filter(|w| !w.is_bare && w.path != main_path)
@@ -31,6 +40,7 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Res
                 failed_worktrees.push(wt.path.clone());
                 continue;
             }
+            worktree::prune_empty_repository_dir(&wt.path, &repository_dir, layout);
             if with_branch && !wt.branch.is_empty() {
                 info!("Deleting local branch '{}'...", wt.branch);
                 if let Err(e) = git::delete_local_branch(&main_path, &wt.branch, force) {
@@ -108,6 +118,7 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Res
     let branch = target.branch.clone();
     info!("Removing worktree '{branch}'...");
     git::remove_worktree(&main_path, &target.path, force)?;
+    worktree::prune_empty_repository_dir(&target.path, &repository_dir, layout);
     if with_branch && !branch.is_empty() {
         info!("Deleting local branch '{branch}'...");
         git::delete_local_branch(&main_path, &branch, force)?;

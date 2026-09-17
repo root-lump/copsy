@@ -118,19 +118,24 @@ copsy pr 42 --cursor                # Checkout PR #42 + open Cursor
 
 Run `copsy config global` to create the global configuration interactively at
 `~/.config/copsy/config.toml` (respects `$XDG_CONFIG_HOME`). It configures the
-default worktree directory and whether uncommitted changes are carried by
-default.
+default worktree directory, the directory layout, and whether uncommitted
+changes are carried by default.
 
 ```toml
 [worktree]
 # Directory where worktrees are created (default: parent of the main worktree)
 # Supports ~ expansion
 base_dir = "~/worktrees"
+# How worktree directories are arranged: "flat" (default) or "nested"
+layout = "nested"
 # Carry uncommitted changes when switching worktrees
 carry_changes = true
 ```
 
-Without `base_dir`, worktrees are created alongside the main worktree, named `<repo>-<branch>`.
+Without `base_dir`, worktrees are created alongside the main worktree. The
+`flat` layout names each one `<repo>-<branch>`; the `nested` layout groups them
+under a `<repo>-worktrees` directory instead, because `<repo>` is already the
+main worktree in a default clone.
 
 The command is create-only and will not overwrite an existing configuration.
 
@@ -138,12 +143,13 @@ The command is create-only and will not overwrite an existing configuration.
 
 Run `copsy config repo` to create machine-local repository configuration at
 `<git-common-dir>/copsy.toml`. The initializer can override the global worktree
-directory, select ignored files to copy from the main worktree, and choose
-which worktree commands run setup automatically.
+directory and layout, select ignored files to copy from the main worktree, and
+choose which worktree commands run setup automatically.
 
 ```toml
 # [worktree]
 # base_dir = "~/worktrees"
+# layout = "flat"
 [setup]
 auto = ["new"]
 # command = ["npm", "install"]
@@ -153,8 +159,8 @@ copy_from_main = [
 ]
 ```
 
-Repository `base_dir` overrides the global value. Unset repository values
-inherit the global configuration.
+Repository `base_dir` and `layout` override the global values. Unset repository
+values inherit the global configuration.
 The command is create-only and will not overwrite an existing configuration.
 
 `auto` accepts `new`, `add`, and `pr`. Omit it or leave setup unconfigured to
@@ -180,15 +186,29 @@ bash` so the shell wrapper recognizes setup requests.
 
 ## Worktree naming
 
-Worktrees are named `<repo>-<branch>`, with `/` in branch names replaced by `-`.
+`/` in branch names is replaced by `-` in both layouts, so a worktree directory
+is never deeper than the layout itself prescribes.
 
 `<repo>` comes from the `origin` remote URL, so it stays the same even if the
 clone directory is renamed. Without an `origin` remote, the main worktree's
 directory name is used instead.
 
-Examples:
+The default `flat` layout names each worktree `<repo>-<branch>`:
 - Repository `myapp`, branch `feature/login` → `myapp-feature-login`
 - Repository `myapp`, branch `fix-typo` → `myapp-fix-typo`
+
+The `nested` layout places each worktree at `<repo>/<branch>`, which keeps a
+shared `base_dir` grouped by repository:
+- Repository `myapp`, branch `feature/login` → `myapp/feature-login`
+- Repository `myapp`, branch `fix-typo` → `myapp/fix-typo`
+
+When that `<repo>` directory would be the main worktree itself, `-worktrees` is
+appended to it. `git clone` checks out into a directory named after the
+repository, so this is what happens whenever `base_dir` is unset:
+- Main worktree `~/dev/myapp`, branch `fix-typo` → `~/dev/myapp-worktrees/fix-typo`
+
+The directory holding the nested worktrees is removed once its last worktree is
+gone.
 
 Worktrees are always placed next to the main worktree (or under `base_dir`),
 including when `copsy new` or `copsy add` is run from inside another worktree.
