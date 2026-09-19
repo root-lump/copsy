@@ -12,10 +12,19 @@ pub fn run(
     from: Option<&str>,
     options: &TransitionOptions,
 ) -> Result<()> {
-    let root = git::repo_root()?;
+    // Anchored to the main worktree, not the inherited current directory: running
+    // this from inside a worktree would otherwise nest the new one under its sibling.
+    let main_worktree = git::main_worktree_path()?;
+    let repo_name = git::repository_name(&main_worktree);
     let config = Config::load()?;
     let base_dir = config.base_dir();
-    let worktree_path = git::worktree_dir_name(&root, branch, base_dir.as_deref());
+    let worktree_path = git::worktree_dir_name(
+        &repo_name,
+        &main_worktree,
+        branch,
+        base_dir.as_deref(),
+        config.layout(),
+    );
 
     if worktree_path.exists() {
         let worktrees = git::list_worktrees()?;
@@ -38,10 +47,12 @@ pub fn run(
         );
     }
 
-    if let Some(ref directory) = base_dir
-        && !directory.exists()
+    // The worktree's own parent is created rather than base_dir, because the
+    // nested layout inserts a <base_dir>/<repo> level that may not exist yet.
+    if let Some(parent) = worktree_path.parent()
+        && !parent.exists()
     {
-        std::fs::create_dir_all(directory)?;
+        std::fs::create_dir_all(parent)?;
     }
 
     let verb = if kind == CreationKind::New {
