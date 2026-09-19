@@ -189,9 +189,11 @@ bash` so the shell wrapper recognizes setup requests.
 `/` in branch names is replaced by `-` in both layouts, so a worktree directory
 is never deeper than the layout itself prescribes.
 
-`<repo>` comes from the `origin` remote URL, so it stays the same even if the
-clone directory is renamed. Without an `origin` remote, the main worktree's
-directory name is used instead.
+`<repo>` comes from the URL of the repository's primary remote, so it stays the
+same even if the clone directory is renamed. The primary remote is `origin`
+when it exists, otherwise the only remote, otherwise the remote that `gh repo
+set-default` resolved. Without any of these, the main worktree's directory name
+is used instead.
 
 The default `flat` layout names each worktree `<repo>-<branch>`:
 - Repository `myapp`, branch `feature/login` → `myapp-feature-login`

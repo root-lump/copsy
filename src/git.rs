@@ -175,8 +175,97 @@ fn repository_name_or_directory(remote_name: Option<String>, main_worktree: &Pat
 }
 
 fn remote_repository_name(main_worktree: &Path) -> Option<String> {
-    let url = git_output_in(main_worktree, &["remote", "get-url", "origin"]).ok()?;
+    let remote = primary_remote_in(main_worktree)?;
+    let url = git_output_in(main_worktree, &["remote", "get-url", &remote]).ok()?;
     repository_name_from_url(&url)
+}
+
+/// Remote that names the repository and owns the branches worth offering.
+///
+/// `origin` comes first so that repositories which already have one keep the
+/// behaviour they had before remotes were resolved at all. The `gh-resolved`
+/// remote is the last resort: under a fork workflow it points at the upstream
+/// repository, whose branches are not the ones a contributor works on.
+fn resolve_primary_remote(remotes: &[String], gh_default: Option<&str>) -> Option<String> {
+    if remotes.iter().any(|r| r == "origin") {
+        return Some("origin".to_string());
+    }
+    if let [only] = remotes {
+        return Some(only.clone());
+    }
+    let gh_default = gh_default?;
+    remotes
+        .iter()
+        .any(|r| r == gh_default)
+        .then(|| gh_default.to_string())
+}
+
+/// Remote that holds the pull requests `gh` reports on.
+///
+/// `gh repo set-default` decides which repository `gh pr view` answers for, so
+/// its remote has to win here: under a fork workflow the pull request lives in
+/// the upstream repository, not in the `origin` fork.
+fn resolve_gh_remote(remotes: &[String], gh_default: Option<&str>) -> Option<String> {
+    if let Some(gh_default) = gh_default
+        && remotes.iter().any(|r| r == gh_default)
+    {
+        return Some(gh_default.to_string());
+    }
+    if remotes.iter().any(|r| r == "origin") {
+        return Some("origin".to_string());
+    }
+    if let [only] = remotes {
+        return Some(only.clone());
+    }
+    None
+}
+
+// Reads the key rather than splitting on every dot, because a remote name may
+// itself contain dots: "remote.my.fork.gh-resolved base" names "my.fork".
+fn parse_gh_resolved_remote(config_output: &str) -> Option<String> {
+    let key = config_output.lines().next()?.split_whitespace().next()?;
+    let name = key.strip_prefix("remote.")?.strip_suffix(".gh-resolved")?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn list_remotes_in(dir: &Path) -> Vec<String> {
+    git_output_in(dir, &["remote"])
+        .map(|output| output.lines().map(|line| line.to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn gh_default_remote_in(dir: &Path) -> Option<String> {
+    let output = git_output_in(
+        dir,
+        &["config", "--get-regexp", r"^remote\..*\.gh-resolved$"],
+    )
+    .ok()?;
+    parse_gh_resolved_remote(&output)
+}
+
+fn primary_remote_in(dir: &Path) -> Option<String> {
+    let remotes = list_remotes_in(dir);
+    resolve_primary_remote(&remotes, gh_default_remote_in(dir).as_deref())
+}
+
+fn gh_remote_in(dir: &Path) -> Option<String> {
+    let remotes = list_remotes_in(dir);
+    resolve_gh_remote(&remotes, gh_default_remote_in(dir).as_deref())
+}
+
+fn primary_remote() -> Option<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    primary_remote_in(&cwd)
+}
+
+fn gh_remote() -> Option<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    gh_remote_in(&cwd)
+}
+
+fn gh_default_remote() -> Option<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    gh_default_remote_in(&cwd)
 }
 
 // Splits on both separators because git accepts two URL shapes for the same
@@ -371,11 +460,25 @@ pub fn list_branches() -> Result<Vec<String>> {
 
 pub fn list_remote_branches() -> Result<Vec<String>> {
     let stdout = git_output(&["branch", "-r", "--format=%(refname:short)"])?;
-    Ok(stdout
+    Ok(strip_remote_prefix(&stdout, primary_remote().as_deref()))
+}
+
+// Only the primary remote's prefix is stripped: a bare branch name is what
+// `git worktree add` needs to create a tracking branch, and stripping every
+// remote's prefix would make branches of different remotes collide.
+fn strip_remote_prefix(branch_list: &str, primary: Option<&str>) -> Vec<String> {
+    let prefix = primary.map(|name| format!("{name}/"));
+    branch_list
         .lines()
-        .filter(|s| !s.contains("HEAD"))
-        .map(|s| s.strip_prefix("origin/").unwrap_or(s).to_string())
-        .collect())
+        .filter(|line| !line.contains("HEAD"))
+        .map(|line| match &prefix {
+            Some(prefix) => line
+                .strip_prefix(prefix.as_str())
+                .unwrap_or(line)
+                .to_string(),
+            None => line.to_string(),
+        })
+        .collect()
 }
 
 fn check_gh_default_repo() -> Result<()> {
@@ -383,7 +486,7 @@ fn check_gh_default_repo() -> Result<()> {
     if remotes.lines().count() <= 1 {
         return Ok(());
     }
-    if !git_succeeds(&["config", "--get-regexp", r"^remote\..*\.gh-resolved$"]) {
+    if gh_default_remote().is_none() {
         bail!(
             "Multiple remotes found but no default repository has been set for gh.\n  \
              Run 'gh repo set-default' to select one."
@@ -422,21 +525,23 @@ pub fn fetch_pr(target: &str) -> Result<String> {
 }
 
 pub fn fetch_pr_branch(pr_number: &str, branch: &str) -> Result<()> {
-    // Try fetching from origin first — this sets up origin/<branch> so
+    let remote = gh_remote().context("No git remote found to fetch the pull request from")?;
+
+    // Try fetching the branch itself first — this sets up <remote>/<branch> so
     // `git worktree add` can auto-create a tracking branch.
-    if !git_succeeds(&["fetch", "origin", branch]) {
+    if !git_succeeds(&["fetch", &remote, branch]) {
         let pr_ref = format!("pull/{pr_number}/head:{branch}");
-        git_run(&["fetch", "origin", &pr_ref])?;
+        git_run(&["fetch", &remote, &pr_ref])?;
     }
 
-    // Set upstream tracking only when origin/<branch> exists (same-repo PRs)
+    // Set upstream tracking only when <remote>/<branch> exists (same-repo PRs)
     // and the local branch already exists (otherwise worktree add handles it).
-    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let remote_ref = format!("refs/remotes/{remote}/{branch}");
     let local_ref = format!("refs/heads/{branch}");
     if git_succeeds(&["rev-parse", "--verify", &remote_ref])
         && git_succeeds(&["rev-parse", "--verify", &local_ref])
     {
-        let upstream = format!("origin/{branch}");
+        let upstream = format!("{remote}/{branch}");
         let _ = Command::new("git")
             .args(["branch", "--set-upstream-to", &upstream, branch])
             .output();
@@ -667,6 +772,124 @@ mod tests {
             repository_name_or_directory(Some("myapp".to_string()), main_worktree),
             "myapp"
         );
+    }
+
+    fn remotes(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn primary_remote_prefers_origin_then_the_only_remote_then_gh_default() {
+        assert_eq!(
+            resolve_primary_remote(&remotes(&["origin", "upstream"]), None).as_deref(),
+            Some("origin")
+        );
+        assert_eq!(
+            resolve_primary_remote(&remotes(&["upstream"]), None).as_deref(),
+            Some("upstream")
+        );
+        assert_eq!(
+            resolve_primary_remote(&remotes(&["upstream", "fork"]), Some("fork")).as_deref(),
+            Some("fork")
+        );
+        assert_eq!(
+            resolve_primary_remote(&remotes(&["upstream", "fork"]), None),
+            None
+        );
+        assert_eq!(
+            resolve_primary_remote(&remotes(&["upstream", "fork"]), Some("gone")),
+            None
+        );
+        assert_eq!(resolve_primary_remote(&[], None), None);
+    }
+
+    #[test]
+    fn gh_remote_prefers_the_gh_default_then_origin_then_the_only_remote() {
+        assert_eq!(
+            resolve_gh_remote(&remotes(&["origin", "upstream"]), Some("upstream")).as_deref(),
+            Some("upstream")
+        );
+        assert_eq!(
+            resolve_gh_remote(&remotes(&["origin", "upstream"]), None).as_deref(),
+            Some("origin")
+        );
+        assert_eq!(
+            resolve_gh_remote(&remotes(&["upstream"]), None).as_deref(),
+            Some("upstream")
+        );
+        assert_eq!(resolve_gh_remote(&[], None), None);
+    }
+
+    #[test]
+    fn parse_gh_resolved_remote_reads_the_remote_name() {
+        assert_eq!(
+            parse_gh_resolved_remote("remote.upstream.gh-resolved base").as_deref(),
+            Some("upstream")
+        );
+        assert_eq!(
+            parse_gh_resolved_remote("remote.my.fork.gh-resolved base").as_deref(),
+            Some("my.fork")
+        );
+        assert_eq!(parse_gh_resolved_remote(""), None);
+    }
+
+    #[test]
+    fn strip_remote_prefix_only_strips_the_primary_remote() {
+        let branch_list = "upstream/feature/login\norigin/topic\norigin/HEAD -> origin/main";
+        assert_eq!(
+            strip_remote_prefix(branch_list, Some("upstream")),
+            vec!["feature/login".to_string(), "origin/topic".to_string()]
+        );
+        assert_eq!(
+            strip_remote_prefix(branch_list, None),
+            vec![
+                "upstream/feature/login".to_string(),
+                "origin/topic".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn repository_name_uses_a_remote_that_is_not_named_origin() {
+        let repository = tempdir().unwrap();
+        run_git(repository.path(), &["init", "-q"]);
+        run_git(
+            repository.path(),
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://example.com/org/myapp.git",
+            ],
+        );
+
+        assert_eq!(repository_name(repository.path()), "myapp");
+    }
+
+    #[test]
+    fn repository_name_prefers_origin_over_other_remotes() {
+        let repository = tempdir().unwrap();
+        run_git(repository.path(), &["init", "-q"]);
+        run_git(
+            repository.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.com/org/canonical.git",
+            ],
+        );
+        run_git(
+            repository.path(),
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://example.com/org/other.git",
+            ],
+        );
+
+        assert_eq!(repository_name(repository.path()), "canonical");
     }
 
     #[test]
