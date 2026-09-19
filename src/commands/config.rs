@@ -1,4 +1,4 @@
-use crate::config::{Config, SetupTrigger, global_config_path};
+use crate::config::{Config, SetupTrigger, WorktreeLayout, global_config_path};
 use crate::git;
 use crate::info;
 use crate::repository_path::RepositoryPath;
@@ -15,6 +15,8 @@ const NO_AUTO_LABEL: &str = "Do not run setup automatically";
 struct RepositoryConfigDraft {
     base_dir: Option<String>,
     inherited_base_dir: Option<String>,
+    layout: Option<WorktreeLayout>,
+    inherited_layout: WorktreeLayout,
     auto: Vec<SetupTrigger>,
     copy_from_main: Vec<RepositoryPath>,
     copy_examples: Vec<RepositoryPath>,
@@ -22,6 +24,7 @@ struct RepositoryConfigDraft {
 
 struct GlobalConfigDraft {
     base_dir: Option<String>,
+    layout: Option<WorktreeLayout>,
     carry_changes: Option<bool>,
 }
 
@@ -63,6 +66,28 @@ pub fn run_repo() -> Result<()> {
         None
     };
 
+    let layout_options = [
+        format!("Inherit global setting: {}", global.layout().prompt_label()),
+        "Override for this repository".to_string(),
+    ];
+    let Some(layout_selection) = Select::with_theme(&theme)
+        .with_prompt("Worktree directory layout")
+        .items(layout_options)
+        .default(0)
+        .interact_opt()?
+    else {
+        return Ok(());
+    };
+
+    let layout = if layout_selection == 1 {
+        let Some(layout) = select_layout(&theme, "Layout for this repository")? else {
+            return Ok(());
+        };
+        Some(layout)
+    } else {
+        None
+    };
+
     let copy_from_main = select_copy_paths(&theme, &ignored)?;
     let Some(copy_from_main) = copy_from_main else {
         return Ok(());
@@ -83,6 +108,8 @@ pub fn run_repo() -> Result<()> {
     let draft = RepositoryConfigDraft {
         base_dir,
         inherited_base_dir: global.base_dir_raw().map(str::to_owned),
+        layout,
+        inherited_layout: global.layout(),
         auto,
         copy_from_main,
         copy_examples,
@@ -118,6 +145,20 @@ pub fn run_global() -> Result<()> {
         None
     };
 
+    let layout_options = ["Do not configure"]
+        .into_iter()
+        .chain(WorktreeLayout::ALL.map(WorktreeLayout::prompt_label))
+        .collect::<Vec<_>>();
+    let Some(layout_selection) = Select::with_theme(&theme)
+        .with_prompt("Worktree directory layout")
+        .items(&layout_options)
+        .default(0)
+        .interact_opt()?
+    else {
+        return Ok(());
+    };
+    let layout = (layout_selection > 0).then(|| WorktreeLayout::ALL[layout_selection - 1]);
+
     let carry_options = [
         "Do not configure",
         "Always carry uncommitted changes",
@@ -140,6 +181,7 @@ pub fn run_global() -> Result<()> {
 
     let draft = GlobalConfigDraft {
         base_dir,
+        layout,
         carry_changes,
     };
     persist_config(&destination, &render_global_config(&draft))?;
@@ -175,6 +217,19 @@ fn select_copy_paths(
             .map(|index| ignored[index - 1].clone())
             .collect(),
     ))
+}
+
+fn select_layout(theme: &ColorfulTheme, prompt: &str) -> Result<Option<WorktreeLayout>> {
+    let options = WorktreeLayout::ALL.map(WorktreeLayout::prompt_label);
+    let Some(selection) = Select::with_theme(theme)
+        .with_prompt(prompt)
+        .items(options)
+        .default(0)
+        .interact_opt()?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(WorktreeLayout::ALL[selection]))
 }
 
 fn select_auto_triggers(theme: &ColorfulTheme) -> Result<Option<Vec<SetupTrigger>>> {
@@ -215,17 +270,25 @@ fn persist_config(destination: &Path, content: &str) -> Result<()> {
 }
 
 fn render_repository_config(draft: &RepositoryConfigDraft) -> String {
-    let mut lines = Vec::new();
-    if let Some(base_dir) = &draft.base_dir {
-        lines.push("[worktree]".to_string());
-        lines.push(format!("base_dir = {}", quote_toml(base_dir)));
+    let mut lines = vec![if draft.base_dir.is_some() || draft.layout.is_some() {
+        "[worktree]".to_string()
     } else {
-        lines.push("# [worktree]".to_string());
-        lines.push(format!(
+        "# [worktree]".to_string()
+    }];
+    lines.push(match &draft.base_dir {
+        Some(base_dir) => format!("base_dir = {}", quote_toml(base_dir)),
+        None => format!(
             "# base_dir = {}",
             quote_toml(draft.inherited_base_dir.as_deref().unwrap_or("~/worktrees"))
-        ));
-    }
+        ),
+    });
+    lines.push(match draft.layout {
+        Some(layout) => format!("layout = {}", quote_toml(layout.config_value())),
+        None => format!(
+            "# layout = {}",
+            quote_toml(draft.inherited_layout.config_value())
+        ),
+    });
 
     lines.push("[setup]".to_string());
     if draft.auto.is_empty() {
@@ -250,7 +313,8 @@ fn render_repository_config(draft: &RepositoryConfigDraft) -> String {
 }
 
 fn render_global_config(draft: &GlobalConfigDraft) -> String {
-    let configured = draft.base_dir.is_some() || draft.carry_changes.is_some();
+    let configured =
+        draft.base_dir.is_some() || draft.layout.is_some() || draft.carry_changes.is_some();
     let mut lines = vec![if configured {
         "[worktree]".to_string()
     } else {
@@ -259,6 +323,10 @@ fn render_global_config(draft: &GlobalConfigDraft) -> String {
     lines.push(match &draft.base_dir {
         Some(path) => format!("base_dir = {}", quote_toml(path)),
         None => "# base_dir = \"~/worktrees\"".to_string(),
+    });
+    lines.push(match draft.layout {
+        Some(layout) => format!("layout = {}", quote_toml(layout.config_value())),
+        None => "# layout = \"flat\"".to_string(),
     });
     lines.push(match draft.carry_changes {
         Some(value) => format!("carry_changes = {value}"),
@@ -358,6 +426,8 @@ mod tests {
         RepositoryConfigDraft {
             base_dir: None,
             inherited_base_dir: Some("~/worktrees".to_string()),
+            layout: None,
+            inherited_layout: WorktreeLayout::Flat,
             auto: Vec::new(),
             copy_from_main: Vec::new(),
             copy_examples: vec![path(".env"), path("target")],
@@ -373,6 +443,7 @@ mod tests {
             concat!(
                 "# [worktree]\n",
                 "# base_dir = \"~/worktrees\"\n",
+                "# layout = \"flat\"\n",
                 "[setup]\n",
                 "# auto = [\"new\"]\n",
                 "# command = [\"npm\", \"install\"]\n",
@@ -390,6 +461,8 @@ mod tests {
         let draft = RepositoryConfigDraft {
             base_dir: Some("~/repo-worktrees".to_string()),
             inherited_base_dir: None,
+            layout: Some(WorktreeLayout::Nested),
+            inherited_layout: WorktreeLayout::Flat,
             auto: vec![SetupTrigger::New, SetupTrigger::Add],
             copy_from_main: vec![path(".env"), path("config/local.toml")],
             copy_examples: Vec::new(),
@@ -400,6 +473,7 @@ mod tests {
             concat!(
                 "[worktree]\n",
                 "base_dir = \"~/repo-worktrees\"\n",
+                "layout = \"nested\"\n",
                 "[setup]\n",
                 "auto = [\"new\", \"add\"]\n",
                 "# command = [\"npm\", \"install\"]\n",
@@ -412,6 +486,34 @@ mod tests {
     }
 
     #[test]
+    fn renders_inherited_layout_as_a_comment_and_keeps_the_table_enabled() {
+        let overriding = RepositoryConfigDraft {
+            base_dir: None,
+            inherited_base_dir: None,
+            layout: Some(WorktreeLayout::Nested),
+            inherited_layout: WorktreeLayout::Flat,
+            ..draft()
+        };
+
+        assert!(render_repository_config(&overriding).starts_with(concat!(
+            "[worktree]\n",
+            "# base_dir = \"~/worktrees\"\n",
+            "layout = \"nested\"\n",
+        )));
+
+        let inheriting = RepositoryConfigDraft {
+            inherited_layout: WorktreeLayout::Nested,
+            ..draft()
+        };
+
+        assert!(render_repository_config(&inheriting).starts_with(concat!(
+            "# [worktree]\n",
+            "# base_dir = \"~/worktrees\"\n",
+            "# layout = \"nested\"\n",
+        )));
+    }
+
+    #[test]
     fn escapes_toml_strings() {
         assert_eq!(quote_toml("a\"b\\c"), "\"a\\\"b\\\\c\"");
     }
@@ -420,6 +522,7 @@ mod tests {
     fn renders_unset_global_configuration_without_blank_lines() {
         let result = render_global_config(&GlobalConfigDraft {
             base_dir: None,
+            layout: None,
             carry_changes: None,
         });
 
@@ -428,6 +531,7 @@ mod tests {
             concat!(
                 "# [worktree]\n",
                 "# base_dir = \"~/worktrees\"\n",
+                "# layout = \"flat\"\n",
                 "# carry_changes = false\n"
             )
         );
@@ -439,33 +543,52 @@ mod tests {
         assert_eq!(
             render_global_config(&GlobalConfigDraft {
                 base_dir: Some("~/custom".to_string()),
+                layout: None,
                 carry_changes: None,
             }),
             concat!(
                 "[worktree]\n",
                 "base_dir = \"~/custom\"\n",
+                "# layout = \"flat\"\n",
                 "# carry_changes = false\n"
             )
         );
         assert_eq!(
             render_global_config(&GlobalConfigDraft {
                 base_dir: None,
+                layout: Some(WorktreeLayout::Nested),
+                carry_changes: None,
+            }),
+            concat!(
+                "[worktree]\n",
+                "# base_dir = \"~/worktrees\"\n",
+                "layout = \"nested\"\n",
+                "# carry_changes = false\n"
+            )
+        );
+        assert_eq!(
+            render_global_config(&GlobalConfigDraft {
+                base_dir: None,
+                layout: None,
                 carry_changes: Some(true),
             }),
             concat!(
                 "[worktree]\n",
                 "# base_dir = \"~/worktrees\"\n",
+                "# layout = \"flat\"\n",
                 "carry_changes = true\n"
             )
         );
         assert_eq!(
             render_global_config(&GlobalConfigDraft {
                 base_dir: None,
+                layout: None,
                 carry_changes: Some(false),
             }),
             concat!(
                 "[worktree]\n",
                 "# base_dir = \"~/worktrees\"\n",
+                "# layout = \"flat\"\n",
                 "carry_changes = false\n"
             )
         );

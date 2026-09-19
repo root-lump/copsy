@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub struct Config {
     base_dir: Option<String>,
+    layout: WorktreeLayout,
     carry_changes: bool,
     setup: Option<SetupConfig>,
 }
@@ -61,6 +62,33 @@ impl SetupTrigger {
     }
 }
 
+/// How worktree directories are arranged below the parent directory.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorktreeLayout {
+    #[default]
+    Flat,
+    Nested,
+}
+
+impl WorktreeLayout {
+    pub const ALL: [Self; 2] = [Self::Flat, Self::Nested];
+
+    pub fn config_value(self) -> &'static str {
+        match self {
+            Self::Flat => "flat",
+            Self::Nested => "nested",
+        }
+    }
+
+    pub fn prompt_label(self) -> &'static str {
+        match self {
+            Self::Flat => "Flat (<repo>-<branch>)",
+            Self::Nested => "Nested (<repo>/<branch>)",
+        }
+    }
+}
+
 #[derive(Default, Deserialize)]
 struct GlobalConfig {
     worktree: Option<GlobalWorktreeConfig>,
@@ -69,6 +97,7 @@ struct GlobalConfig {
 #[derive(Default, Deserialize)]
 struct GlobalWorktreeConfig {
     base_dir: Option<String>,
+    layout: Option<WorktreeLayout>,
     carry_changes: Option<bool>,
 }
 
@@ -81,6 +110,7 @@ struct RepositoryConfig {
 #[derive(Default, Deserialize)]
 struct RepositoryWorktreeConfig {
     base_dir: Option<String>,
+    layout: Option<WorktreeLayout>,
 }
 
 #[derive(Default, Deserialize)]
@@ -113,6 +143,7 @@ impl Config {
         let worktree = global.worktree.unwrap_or_default();
         Self {
             base_dir: worktree.base_dir,
+            layout: worktree.layout.unwrap_or_default(),
             carry_changes: worktree.carry_changes.unwrap_or(false),
             setup: None,
         }
@@ -120,8 +151,13 @@ impl Config {
 
     fn from_raw(global: GlobalConfig, repository: RepositoryConfig) -> Result<Self> {
         let mut config = Self::from_global(global);
-        if let Some(base_dir) = repository.worktree.and_then(|worktree| worktree.base_dir) {
-            config.base_dir = Some(base_dir);
+        if let Some(worktree) = repository.worktree {
+            if let Some(base_dir) = worktree.base_dir {
+                config.base_dir = Some(base_dir);
+            }
+            if let Some(layout) = worktree.layout {
+                config.layout = layout;
+            }
         }
         config.setup = repository.setup.map(resolve_setup).transpose()?;
         Ok(config)
@@ -139,6 +175,10 @@ impl Config {
 
     pub fn base_dir_raw(&self) -> Option<&str> {
         self.base_dir.as_deref()
+    }
+
+    pub fn layout(&self) -> WorktreeLayout {
+        self.layout
     }
 
     pub fn setup(&self) -> Option<&SetupConfig> {
@@ -260,8 +300,67 @@ mod tests {
     fn empty_configuration_uses_defaults() {
         let config = Config::default();
         assert!(config.base_dir().is_none());
+        assert_eq!(config.layout(), WorktreeLayout::Flat);
         assert!(!config.carry_changes());
         assert!(config.setup().is_none());
+    }
+
+    #[test]
+    fn repository_layout_overrides_the_global_layout() {
+        let global: GlobalConfig = toml::from_str(
+            r#"
+            [worktree]
+            layout = "nested"
+            "#,
+        )
+        .unwrap();
+        let repository: RepositoryConfig = toml::from_str(
+            r#"
+            [worktree]
+            layout = "flat"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::from_raw(global, repository).unwrap();
+
+        assert_eq!(config.layout(), WorktreeLayout::Flat);
+    }
+
+    #[test]
+    fn repository_without_layout_inherits_global() {
+        let global: GlobalConfig = toml::from_str(
+            r#"
+            [worktree]
+            layout = "nested"
+            "#,
+        )
+        .unwrap();
+        let repository: RepositoryConfig = toml::from_str(
+            r#"
+            [worktree]
+            base_dir = "/repository"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::from_raw(global, repository).unwrap();
+
+        assert_eq!(config.layout(), WorktreeLayout::Nested);
+        assert_eq!(config.base_dir(), Some(PathBuf::from("/repository")));
+    }
+
+    #[test]
+    fn rejects_unknown_layout_values() {
+        assert!(
+            toml::from_str::<GlobalConfig>(
+                r#"
+                [worktree]
+                layout = "tree"
+                "#,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -283,6 +382,7 @@ mod tests {
             r#"
             [worktree]
             base_dir = "/repository"
+            layout = "nested"
             [setup]
             auto = ["new", "pr"]
             command = ["npm", "install"]
@@ -294,6 +394,7 @@ mod tests {
         let config = Config::load_from_paths(&global, &repository).unwrap();
 
         assert_eq!(config.base_dir(), Some(PathBuf::from("/repository")));
+        assert_eq!(config.layout(), WorktreeLayout::Nested);
         assert!(config.carry_changes());
         assert!(config.auto_setup(SetupTrigger::New));
         assert!(config.auto_setup(SetupTrigger::Pr));
