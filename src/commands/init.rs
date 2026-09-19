@@ -90,8 +90,26 @@ fn zsh_completion() -> &'static str {
 _copsy_branches() {
     local -a branches
     branches=(${(f)"$(git branch --format='%(refname:short)' 2>/dev/null)"})
+    # Resolve the primary remote the same way copsy does, so the candidates
+    # match the branch names copsy accepts.
+    local -a remotes
+    remotes=(${(f)"$(git remote 2>/dev/null)"})
+    local primary=""
+    if (( ${remotes[(I)origin]} )); then
+        primary=origin
+    elif (( ${#remotes} == 1 )); then
+        primary=${remotes[1]}
+    else
+        primary="$(git config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | head -1)"
+        primary=${primary%% *}
+        primary=${primary#remote.}
+        primary=${primary%.gh-resolved}
+    fi
     local -a remote_branches
-    remote_branches=(${(f)"$(git branch -r --format='%(refname:short)' 2>/dev/null | sed 's|^origin/||' | grep -v HEAD)"})
+    remote_branches=(${(f)"$(git branch -r --format='%(refname:short)' 2>/dev/null | grep -v HEAD)"})
+    if [[ -n $primary ]]; then
+        remote_branches=(${remote_branches#${primary}/})
+    fi
     _describe 'branch' branches
     _describe 'remote branch' remote_branches
 }
