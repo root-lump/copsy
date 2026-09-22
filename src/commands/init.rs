@@ -127,16 +127,17 @@ _copsy() {
     local -a args
 
     args=(
-        '(-c --claude)'{-c,--claude}'[Launch claude]'
-        '(-x --codex)'{-x,--codex}'[Launch codex]'
+        '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
+        '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
         '--code[Open in VS Code]'
         '--cursor[Open in Cursor]'
-        '--open=[Run custom command]:command:'
-        '(--no-carry)--carry[Carry uncommitted changes]'
-        '(--carry)--no-carry[Do not carry uncommitted changes]'
-        '(--no-setup)--setup[Run repository setup]'
-        '(--setup)--no-setup[Do not run repository setup]'
+        '--open=[Run a custom command after switching]:command:'
+        '(--no-carry)--carry[Carry uncommitted changes to the target worktree]'
+        '(--carry)--no-carry[Do not carry uncommitted changes (overrides config)]'
+        '(--no-setup)--setup[Run repository setup for the target worktree]'
+        '(--setup)--no-setup[Do not run repository setup (overrides config)]'
         '(-h --help)'{-h,--help}'[Print help]'
+        '(-V --version)'{-V,--version}'[Print version]'
         '1:subcommand:->subcmd'
         '*::arg:->args'
     )
@@ -159,7 +160,7 @@ _copsy() {
                 'close:Close current worktree and return to main'
                 'init:Output shell integration and completion definitions'
                 'pr:Checkout a pull request as a worktree'
-                'config:Manage repository configuration'
+                'config:Manage copsy configuration'
                 'setup:Run repository setup for the current worktree'
             )
             _describe 'subcommand' subcmds && ret=0
@@ -167,21 +168,21 @@ _copsy() {
         args)
             local -a launch_flags
             launch_flags=(
-                '(-c --claude)'{-c,--claude}'[Launch claude]'
-                '(-x --codex)'{-x,--codex}'[Launch codex]'
+                '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
+                '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
                 '--code[Open in VS Code]'
                 '--cursor[Open in Cursor]'
-                '--open=[Run custom command]:command:'
+                '--open=[Run a custom command after switching]:command:'
             )
             local -a carry_flags
             carry_flags=(
-                '(--no-carry)--carry[Carry uncommitted changes]'
-                '(--carry)--no-carry[Do not carry uncommitted changes]'
+                '(--no-carry)--carry[Carry uncommitted changes to the target worktree]'
+                '(--carry)--no-carry[Do not carry uncommitted changes (overrides config)]'
             )
             local -a setup_flags
             setup_flags=(
-                '(--no-setup)--setup[Run repository setup]'
-                '(--setup)--no-setup[Do not run repository setup]'
+                '(--no-setup)--setup[Run repository setup for the target worktree]'
+                '(--setup)--no-setup[Do not run repository setup (overrides config)]'
             )
             local skip_next=0
             for word in "${words[@]}"; do
@@ -203,7 +204,7 @@ _copsy() {
             done
             case "$subcommand" in
                 new)
-                    _arguments -s -S $launch_flags $carry_flags $setup_flags '--from=[Base branch]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
+                    _arguments -s -S $launch_flags $carry_flags $setup_flags '--from=[Base branch to create from (default\: current HEAD)]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
                     ;;
                 add)
                     _arguments -s -S $launch_flags $carry_flags $setup_flags '1:branch:_copsy_branches' && ret=0
@@ -273,7 +274,7 @@ _copsy_bash() {
 
     if [[ -z "$subcommand" ]]; then
         if [[ "${cur}" == -* ]]; then
-            COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+            COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open -V --version" -- "${cur}"))
         else
             COMPREPLY=($(compgen -W "${subcmds}" -- "${cur}"))
         fi
@@ -345,6 +346,8 @@ complete -F _copsy_bash copsy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Cli;
+    use clap::CommandFactory;
 
     #[test]
     fn shell_runs_setup_before_cd_and_launch() {
@@ -363,6 +366,27 @@ mod tests {
             assert!(completion.contains("setup"));
             assert!(completion.contains("--no-setup"));
         }
+    }
+
+    // Guards against drift: completion descriptions are hand-written, so they can
+    // silently diverge from the clap `about` text shown by --help.
+    #[test]
+    fn zsh_subcommand_descriptions_match_clap_about() {
+        let zsh = zsh_completion();
+        for subcommand in Cli::command().get_subcommands() {
+            let name = subcommand.get_name();
+            if name == "help" {
+                continue;
+            }
+            let about = subcommand.get_about().expect("subcommand needs an about");
+            assert!(zsh.contains(&format!("'{name}:{about}'")), "{name}");
+        }
+    }
+
+    #[test]
+    fn completions_offer_version_flag() {
+        assert!(zsh_completion().contains("{-V,--version}'[Print version]'"));
+        assert!(bash_completion().contains("-V --version"));
     }
 
     #[test]
