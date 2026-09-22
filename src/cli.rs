@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "copsy", about = "Git worktree management CLI")]
+#[command(name = "copsy", version, about = "Git worktree management CLI")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -15,6 +15,7 @@ pub struct Cli {
 pub enum Command {
     /// Create a worktree with a new branch
     New {
+        /// Name of the branch to create
         branch: String,
         /// Base branch to create from (default: current HEAD)
         #[arg(long)]
@@ -24,6 +25,7 @@ pub enum Command {
     },
     /// Create a worktree for an existing branch
     Add {
+        /// Local or remote branch to check out
         branch: String,
         #[command(flatten)]
         transition: TransitionFlags,
@@ -31,6 +33,7 @@ pub enum Command {
     /// Switch to a worktree
     #[command(visible_alias = "sw")]
     Switch {
+        /// Worktree name (interactive if omitted)
         name: Option<String>,
         #[command(flatten)]
         transition: TransitionFlags,
@@ -38,6 +41,7 @@ pub enum Command {
     /// Remove a worktree
     #[command(visible_alias = "rm")]
     Remove {
+        /// Worktree name (interactive if omitted)
         name: Option<String>,
         /// Also delete the local branch
         #[arg(long)]
