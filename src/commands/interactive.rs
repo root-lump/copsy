@@ -8,7 +8,7 @@ use crate::theme;
 use anyhow::Result;
 use colored::Colorize;
 
-pub fn run(options: &TransitionOptions) -> Result<()> {
+pub fn run(options: &TransitionOptions, herdr: bool) -> Result<()> {
     let (worktrees, local_branches, remote_branches) =
         crate::spinner::with_spinner("Loading branches...", || {
             let wt = git::list_worktrees();
@@ -70,7 +70,7 @@ pub fn run(options: &TransitionOptions) -> Result<()> {
             worktree::transition(path, &config, options, SetupContext::Existing, || Ok(()))?;
         }
         ItemKind::NewWorktree(branch) => {
-            add::run(branch, CreationKind::Add, None, options)?;
+            add::run(branch, CreationKind::Add, None, options, herdr)?;
         }
     }
 

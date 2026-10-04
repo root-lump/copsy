@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod config;
 mod git;
+mod herdr;
 mod launcher;
 mod output;
 mod repository_path;
@@ -22,11 +23,12 @@ fn main() -> Result<()> {
     console::set_colors_enabled_stderr(true);
     let Cli {
         command,
+        herdr,
         transition: root_transition,
     } = Cli::parse();
 
     match command {
-        None => commands::interactive::run(&root_transition.resolve()?)?,
+        None => commands::interactive::run(&root_transition.resolve()?, herdr)?,
         Some(Command::New {
             branch,
             from,
@@ -36,12 +38,14 @@ fn main() -> Result<()> {
             CreationKind::New,
             from.as_deref(),
             &root_transition.resolve_with(&transition)?,
+            herdr,
         )?,
         Some(Command::Add { branch, transition }) => commands::add::run(
             &branch,
             CreationKind::Add,
             None,
             &root_transition.resolve_with(&transition)?,
+            herdr,
         )?,
         Some(Command::Switch { name, transition }) => {
             commands::switch::run(name.as_deref(), &root_transition.resolve_with(&transition)?)?
@@ -71,9 +75,11 @@ fn main() -> Result<()> {
             root_transition.ensure_unused("init")?;
             commands::init::run(&shell)?;
         }
-        Some(Command::Pr { target, transition }) => {
-            commands::pr::run(target.as_deref(), &root_transition.resolve_pr(&transition)?)?
-        }
+        Some(Command::Pr { target, transition }) => commands::pr::run(
+            target.as_deref(),
+            &root_transition.resolve_pr(&transition)?,
+            herdr,
+        )?,
         Some(Command::Config {
             command: ConfigCommand::Repo,
         }) => {

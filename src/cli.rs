@@ -4,6 +4,10 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "copsy", version, about = "Git worktree management CLI")]
 pub struct Cli {
+    /// Create worktrees using Herdr's directory and naming rules (overrides copsy layout)
+    #[arg(long, global = true)]
+    pub herdr: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -318,6 +322,25 @@ mod tests {
             panic!("expected new command");
         };
         cli.transition.resolve_with(&transition)
+    }
+
+    #[test]
+    fn herdr_is_global_and_opt_in() {
+        for arguments in [
+            vec!["copsy", "--herdr"],
+            vec!["copsy", "--herdr", "new", "feature"],
+            vec!["copsy", "new", "feature", "--herdr"],
+            vec!["copsy", "add", "feature", "--herdr"],
+            vec!["copsy", "pr", "12", "--herdr"],
+            vec!["copsy", "list", "--herdr"],
+        ] {
+            assert!(Cli::try_parse_from(arguments).unwrap().herdr);
+        }
+        assert!(
+            !Cli::try_parse_from(["copsy", "new", "feature"])
+                .unwrap()
+                .herdr
+        );
     }
 
     #[test]

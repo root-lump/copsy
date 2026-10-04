@@ -116,6 +116,25 @@ copsy pr 42 --cursor                # PR #42 チェックアウト + Cursor
 
 ## 設定
 
+### herdr互換のワークツリー
+
+`--herdr` を指定すると、[herdr](https://github.com/herdrdev/herdr)のディレクトリ構造と命名規則でワークツリーを作成できます。
+
+```sh
+copsy new Feature/Login --herdr
+copsy --herdr add fix/typo
+copsy pr 123 --herdr
+copsy --herdr                     # 対話形式でブランチを選択
+```
+
+オプションはサブコマンドの前後どちらにも指定できます。作成時は、その実行に限りcopsyの `worktree.base_dir` と `worktree.layout` より優先されます。指定しなければ従来の構造を使います。その他のコマンドは、ディレクトリ構造に関係なくGitから既存のワークツリーを取得します。
+
+既定では、`~/dev/myapp` のクローンから `Feature/Login` を作成すると、作成先は `~/.herdr/worktrees/myapp/feature-login` になります。ルートディレクトリには `~/.config/herdr/config.toml` の `[worktrees].directory` を使います。`XDG_CONFIG_HOME` がある場合は `$XDG_CONFIG_HOME/herdr/config.toml`、`HERDR_CONFIG_PATH` がある場合は指定された設定ファイルを読み込みます。設定ファイルや項目がなければ `~/.herdr/worktrees` を使います。`~` と `~/` はホームディレクトリへ展開し、相対パスは実行時の作業ディレクトリを基準にします。不正または読み取り不能な設定ではエラーになります。
+
+リポジトリ名は `origin` の名前ではなく、ローカルのGit共通ディレクトリから決まります。クローンを `myapp-local` に改名していれば、`myapp-local` を使います。ブランチ名はASCIIの英字を小文字にし、ASCIIの英数字以外の連続を `-` に置き換え、先頭と末尾の `-` を除去します。結果が空なら `worktree` を使います。異なるブランチが同じ名前のディレクトリになる場合は、誤ったブランチへ移動せず衝突を報告します。
+
+herdr v0.9.1のパス規則に対応しています。herdrの実行ファイルは不要で、herdr内のワークスペースを開く操作は行いません。
+
 `copsy config global` を実行すると、`~/.config/copsy/config.toml`（`$XDG_CONFIG_HOME` に対応）にグローバル設定を対話的に作成します。ワークツリーのデフォルト作成先、ディレクトリの配置方式、未コミットの変更をデフォルトで持ち運ぶかを設定できます。
 
 ```toml
@@ -191,7 +210,7 @@ copsy setup
 
 入れ子のワークツリーを収めるディレクトリは、最後のワークツリーを削除した時点で削除されます。
 
-作成先は常にメインワークツリーの隣（`base_dir` を設定している場合はその下）です。別のワークツリーの中から `copsy new` や `copsy add` を実行しても変わりません。
+`--herdr` を指定しない場合、作成先は常にメインワークツリーの隣（`base_dir` を設定している場合はその下）です。別のワークツリーの中から `copsy new` や `copsy add` を実行しても変わりません。
 
 ## ライセンス
 

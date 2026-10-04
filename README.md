@@ -116,6 +116,41 @@ copsy pr 42 --cursor                # Checkout PR #42 + open Cursor
 
 ## Configuration
 
+### Herdr-compatible worktrees
+
+Use `--herdr` to create worktrees with [Herdr](https://github.com/herdrdev/herdr)'s
+directory and naming rules:
+
+```sh
+copsy new Feature/Login --herdr
+copsy --herdr add fix/typo
+copsy pr 123 --herdr
+copsy --herdr                     # Interactive branch selection
+```
+
+The flag works before or after a subcommand. For worktree creation it overrides
+copsy's `worktree.base_dir` and `worktree.layout` for that invocation. Without
+the flag, copsy keeps its usual layout. Other commands still discover existing
+worktrees through Git, regardless of their directory layout.
+
+By default, a clone at `~/dev/myapp` creates `Feature/Login` at
+`~/.herdr/worktrees/myapp/feature-login`. The root comes from Herdr's
+`[worktrees].directory` in `~/.config/herdr/config.toml` (or
+`$XDG_CONFIG_HOME/herdr/config.toml`); `HERDR_CONFIG_PATH` overrides the config
+file location. A missing file or unset directory uses `~/.herdr/worktrees`.
+`~` and `~/` expand to the home directory; relative roots resolve against the
+invoking working directory. Invalid or unreadable settings cause an error.
+
+The repository name follows the local Git common directory rather than the
+`origin` remote, so a clone renamed to `myapp-local` uses `myapp-local`.
+Branch slugs lowercase ASCII letters, replace runs of non-ASCII-alphanumeric
+characters with `-`, and strip leading/trailing dashes. An empty slug uses
+`worktree`. Different branches that produce the same slug cannot share a
+directory; copsy reports a collision instead of switching to the wrong branch.
+
+This matches Herdr v0.9.1's path rules. It creates Git worktrees without requiring
+the Herdr executable or opening a workspace in Herdr.
+
 Run `copsy config global` to create the global configuration interactively at
 `~/.config/copsy/config.toml` (respects `$XDG_CONFIG_HOME`). It configures the
 default worktree directory, the directory layout, and whether uncommitted
@@ -214,7 +249,7 @@ by default:
 The directory holding the nested worktrees is removed once its last worktree is
 gone.
 
-Worktrees are always placed next to the main worktree (or under `base_dir`),
+Without `--herdr`, worktrees are always placed next to the main worktree (or under `base_dir`),
 including when `copsy new` or `copsy add` is run from inside another worktree.
 
 ## License
