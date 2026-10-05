@@ -77,7 +77,7 @@ pub fn run(options: &TransitionOptions, herdr: bool) -> Result<()> {
                 || Ok(()),
             )?;
             if herdr {
-                herdr::open_workspace(&main_path, path);
+                herdr::open_workspace(&main_path, path, options.launch());
             }
         }
         ItemKind::NewWorktree(branch) => {

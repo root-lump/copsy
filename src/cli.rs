@@ -1,10 +1,11 @@
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
 #[command(name = "copsy", version, about = "Git worktree management CLI")]
 pub struct Cli {
-    /// Keep the caller in place; use Herdr's layout and register workspaces inside Herdr
+    /// Keep the caller in place; register Herdr workspaces and launch tools in child tabs
     #[arg(long, global = true)]
     pub herdr: bool,
 
@@ -85,6 +86,9 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Dispatch deferred launches into a registered Herdr workspace
+    #[command(hide = true)]
+    HerdrLaunch { request: String },
     /// Run repository setup for the current worktree
     Setup {
         /// Execute setup immediately instead of using shell integration
@@ -259,23 +263,23 @@ impl Selection {
 
 #[derive(Args, Clone, Default)]
 struct LaunchFlags {
-    /// Launch claude after switching
+    /// Launch Claude Code (in a child workspace tab with --herdr)
     #[arg(long, short = 'c')]
     claude: bool,
 
-    /// Launch codex after switching
+    /// Launch Codex (in a child workspace tab with --herdr)
     #[arg(long, short = 'x')]
     codex: bool,
 
-    /// Open in VS Code
+    /// Open VS Code (from a child workspace tab with --herdr)
     #[arg(long)]
     code: bool,
 
-    /// Open in Cursor
+    /// Open Cursor (from a child workspace tab with --herdr)
     #[arg(long)]
     cursor: bool,
 
-    /// Run a custom command after switching
+    /// Run a custom command (in a child workspace tab with --herdr)
     #[arg(long, value_name = "CMD")]
     open: Option<String>,
 }
@@ -303,13 +307,19 @@ impl LaunchFlags {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LaunchOptions {
     pub claude: bool,
     pub codex: bool,
     pub code: bool,
     pub cursor: bool,
     pub open: Option<String>,
+}
+
+impl LaunchOptions {
+    pub fn is_empty(&self) -> bool {
+        !self.claude && !self.codex && !self.code && !self.cursor && self.open.is_none()
+    }
 }
 
 #[cfg(test)]

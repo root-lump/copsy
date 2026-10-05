@@ -28,7 +28,7 @@ cargo test
 - `src/git.rs` — Git/gh command wrappers
 - `src/config.rs` — Global and repository configuration loading and resolution
 - `src/repository_path.rs` — Validated repository-relative paths used by setup copies
-- `src/output.rs` — Marker protocol (`__COPSY_CD__`, `__COPSY_LAUNCH__`, `__COPSY_OPEN__`, `__COPSY_SETUP__`) for shell function communication
+- `src/output.rs` — Marker protocol (`__COPSY_CD__`, `__COPSY_LAUNCH__`, `__COPSY_OPEN__`, `__COPSY_SETUP__`, `__COPSY_HERDR_LAUNCH__`) for shell function communication
 - `src/launcher.rs` — Emits launch markers for editors/AI tools
 - `src/commands/` — One file per subcommand
 
@@ -37,6 +37,7 @@ cargo test
 - All user-facing messages go to stderr via `info!` macro; stdout is reserved for markers consumed by the shell function
 - `colored::control::set_override(true)` forces color output even when stdout is piped by the shell function
 - Shell integration uses `copsy init zsh` to output a shell function + zsh completion; the function captures stdout and dispatches markers
+- `__COPSY_HERDR_LAUNCH__` carries JSON to the hidden `herdr-launch` dispatcher after setup; it must never be evaluated as shell code
 - `__COPSY_LAUNCH__` uses case-based dispatch (no eval) for security; `__COPSY_OPEN__` uses eval for user-provided commands only
 
 ## Conventions
