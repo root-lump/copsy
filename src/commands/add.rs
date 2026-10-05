@@ -50,6 +50,7 @@ pub fn run(
                 &config,
                 options,
                 SetupContext::Existing,
+                !herdr,
                 || Ok(()),
             )?;
             if herdr {
@@ -90,6 +91,7 @@ pub fn run(
         &config,
         options,
         SetupContext::Created(kind),
+        !herdr,
         || git::add_worktree(&worktree_path, branch, kind.creates_branch(), from),
     )?;
     if herdr {

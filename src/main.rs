@@ -47,9 +47,11 @@ fn main() -> Result<()> {
             &root_transition.resolve_with(&transition)?,
             herdr,
         )?,
-        Some(Command::Switch { name, transition }) => {
-            commands::switch::run(name.as_deref(), &root_transition.resolve_with(&transition)?)?
-        }
+        Some(Command::Switch { name, transition }) => commands::switch::run(
+            name.as_deref(),
+            &root_transition.resolve_with(&transition)?,
+            herdr,
+        )?,
         Some(Command::Remove {
             name,
             with_branch,
@@ -57,7 +59,7 @@ fn main() -> Result<()> {
             force,
         }) => {
             root_transition.ensure_unused("remove")?;
-            commands::remove::run(name.as_deref(), with_branch, all, force)?;
+            commands::remove::run(name.as_deref(), with_branch, all, force, herdr)?;
         }
         Some(Command::List) => {
             root_transition.ensure_unused("list")?;
@@ -69,7 +71,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Close { with_branch }) => {
             root_transition.ensure_unused("close")?;
-            commands::close::run(with_branch)?;
+            commands::close::run(with_branch, herdr)?;
         }
         Some(Command::Init { shell }) => {
             root_transition.ensure_unused("init")?;

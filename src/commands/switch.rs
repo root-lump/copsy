@@ -2,11 +2,12 @@ use crate::cli::TransitionOptions;
 use crate::commands::worktree::{self, SetupContext};
 use crate::config::Config;
 use crate::git;
+use crate::herdr;
 use crate::info;
 use crate::theme;
 use anyhow::{Result, bail};
 
-pub fn run(name: Option<&str>, options: &TransitionOptions) -> Result<()> {
+pub fn run(name: Option<&str>, options: &TransitionOptions, herdr: bool) -> Result<()> {
     let worktrees = git::list_worktrees()?;
     let non_bare: Vec<_> = worktrees.iter().filter(|w| !w.is_bare).collect();
 
@@ -37,6 +38,11 @@ pub fn run(name: Option<&str>, options: &TransitionOptions) -> Result<()> {
         &config,
         options,
         SetupContext::Existing,
+        !herdr,
         || Ok(()),
-    )
+    )?;
+    if herdr {
+        herdr::open_workspace(&git::main_worktree_path()?, &target.path);
+    }
+    Ok(())
 }

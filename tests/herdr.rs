@@ -103,13 +103,18 @@ fn git(cwd: &Path, arguments: &[&str]) -> Output {
 
 fn assert_target(output: &Output, target: &Path, branch: &str) {
     assert!(
+        output.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_checkout(output, target, branch);
+}
+
+fn assert_checkout(output: &Output, target: &Path, branch: &str) {
+    assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        format!("__COPSY_CD__{}", target.display())
     );
     assert!(target.join(".git").is_file());
     let actual = git(target, &["branch", "--show-current"]);
@@ -439,10 +444,17 @@ fn normal_mode_keeps_origin_naming_and_does_not_read_herdr_config() {
     let repo = Repository::new();
     repo.herdr_config("invalid TOML");
     let flat = repo.run(&repo.main, &["new", "Feature/Flat"]);
-    assert_target(
+    assert_checkout(
         &flat,
         &repo.root.join("remote-name-Feature-Flat"),
         "Feature/Flat",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&flat.stdout).trim(),
+        format!(
+            "__COPSY_CD__{}",
+            repo.root.join("remote-name-Feature-Flat").display()
+        )
     );
     fs::write(
         repo.main.join(".git/copsy.toml"),
@@ -450,11 +462,160 @@ fn normal_mode_keeps_origin_naming_and_does_not_read_herdr_config() {
     )
     .unwrap();
     let nested = repo.run(&repo.main, &["new", "Feature/Nested"]);
-    assert_target(
+    assert_checkout(
         &nested,
         &repo.home.join("nested/remote-name/Feature-Nested"),
         "Feature/Nested",
     );
+    assert_eq!(
+        String::from_utf8_lossy(&nested.stdout).trim(),
+        format!(
+            "__COPSY_CD__{}",
+            repo.home
+                .join("nested/remote-name/Feature-Nested")
+                .display()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn herdr_shell_transitions_and_tools_preserve_the_calling_directory() {
+    for shell in ["bash", "zsh"] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        repo.herdr_config("[worktrees]\ndirectory = \"~/work trees'root\"\n");
+        fs::write(
+            repo.main.join(".git/copsy.toml"),
+            "[setup]\ncommand = ['sh', '-c', 'pwd > setup.cwd']\n",
+        )
+        .unwrap();
+        let init = repo.run(&repo.main, &["init", shell]);
+        let script = repo.root.join("integration.sh");
+        fs::write(&script, init.stdout).unwrap();
+        let checks = r#"
+source "$1"
+claude() { pwd > claude.cwd; cd /; }
+codex() { pwd > codex.cwd; cd /; }
+code() { printf '%s' "$2" > "$COPSY_TEST_ROOT/code.target"; cd /; }
+cursor() { printf '%s' "$2" > "$COPSY_TEST_ROOT/cursor.target"; cd /; }
+before="$PWD"
+copsy new Feature/Stay --herdr --setup --claude --codex --code --cursor --open 'pwd > open.cwd; cd /' || exit 1
+[[ "$PWD" == "$before" ]] || exit 2
+copsy add Feature/Stay --herdr || exit 3
+[[ "$PWD" == "$before" ]] || exit 4
+copsy switch Feature/Stay --herdr || exit 5
+[[ "$PWD" == "$before" ]] || exit 6
+copsy add Feature/Stay --herdr --open "printf '%s' \"it's working\" > comment.result # local note" || exit 9
+[[ "$PWD" == "$before" ]] || exit 10
+copsy add Feature/Stay --herdr --open '' || exit 11
+[[ "$PWD" == "$before" ]] || exit 12
+copsy new Normal/Move || exit 7
+[[ "$PWD" != "$before" ]] || exit 8
+printf '%s\n' "$PWD"
+"#;
+        let template = mock_session_command(&repo, &repo.main, &bin);
+        let mut command = Command::new(shell);
+        for (key, value) in template.get_envs() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+        let mut paths = vec![
+            bin,
+            Path::new(env!("CARGO_BIN_EXE_copsy"))
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let output = command
+            .current_dir(&repo.main)
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .env("COPSY_TEST_ROOT", &repo.root)
+            .args(["-c", checks, "shell-test"])
+            .arg(script)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let target = repo.home.join("work trees'root/local-clone/feature-stay");
+        assert_registration(&repo, &target);
+        assert_eq!(
+            fs::read_to_string(target.join("comment.result")).unwrap(),
+            "it's working",
+            "{shell}: quoted command with a trailing comment"
+        );
+        for file in ["setup.cwd", "claude.cwd", "codex.cwd", "open.cwd"] {
+            assert_eq!(
+                fs::read_to_string(target.join(file)).unwrap().trim(),
+                target.to_str().unwrap(),
+                "{shell}: {file}"
+            );
+        }
+        for file in ["code.target", "cursor.target"] {
+            assert_eq!(
+                fs::read_to_string(repo.root.join(file)).unwrap(),
+                target.to_str().unwrap()
+            );
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            repo.root.join("remote-name-Normal-Move").to_str().unwrap()
+        );
+    }
+}
+
+#[test]
+fn herdr_does_not_remove_or_close_the_calling_checkout() {
+    let repo = Repository::new();
+    let target = repo.default_worktree("feature-keep");
+    assert_target(
+        &repo.run(&repo.main, &["new", "Feature/Keep", "--herdr"]),
+        &target,
+        "Feature/Keep",
+    );
+    let sibling = repo.default_worktree("feature-sibling");
+    assert_target(
+        &repo.run(&repo.main, &["new", "Feature/Sibling", "--herdr"]),
+        &sibling,
+        "Feature/Sibling",
+    );
+    for args in [
+        vec!["close", "--herdr", "--with-branch"],
+        vec![
+            "remove",
+            "Feature/Keep",
+            "--herdr",
+            "--force",
+            "--with-branch",
+        ],
+        vec!["remove", "--all", "--herdr", "--force", "--with-branch"],
+    ] {
+        let output = repo.run(&target, &args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(target.join(".git").exists());
+        assert!(sibling.join(".git").exists());
+        assert!(
+            !git(&repo.main, &["branch", "--list", "Feature/Keep"])
+                .stdout
+                .is_empty()
+        );
+    }
+    let output = repo.run(&repo.main, &["remove", "Feature/Sibling", "--herdr"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!sibling.exists());
 }
 
 #[test]

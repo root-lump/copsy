@@ -38,6 +38,7 @@ pub fn transition<F>(
     config: &Config,
     options: &TransitionOptions,
     setup_context: SetupContext,
+    change_directory: bool,
     prepare_target: F,
 ) -> Result<()>
 where
@@ -52,8 +53,12 @@ where
     if should_request_setup(config, options, setup_context) {
         output::request_setup(target);
     }
-    output::request_cd(target);
-    launcher::launch_tools(options.launch(), target);
+    // Herdr opens the target as a child workspace, so the caller must remain
+    // in its parent checkout even when the session API reports an error.
+    if change_directory {
+        output::request_cd(target);
+    }
+    launcher::launch_tools(options.launch(), target, change_directory);
     Ok(())
 }
 

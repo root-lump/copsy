@@ -151,15 +151,24 @@ directory; copsy reports a collision instead of switching to the wrong branch.
 This matches Herdr v0.9.1's path rules. When run inside Herdr (`HERDR_ENV=1`),
 `new`, `add`, `pr`, and interactive creation also call `herdr worktree open` to
 register the checkout as a child workspace of the repository's parent space.
-This preserves focus and uses the main checkout as the source, including when
+The calling terminal stays in its original directory: `--herdr` never requests
+a shell `cd`, including when reusing a checkout or registration fails. This
+preserves focus and uses the main checkout as the source, including when
 invoked from a linked worktree. Reusing an existing checkout retries registration.
 Herdr's JSON responses do not enter the shell navigation marker channel.
 
 Outside Herdr, the flag creates the same paths and prints a notice that workspace
 registration was skipped. The Herdr executable is only required for registration.
-If registration fails, copsy warns and keeps the Git checkout and navigation;
+If registration fails, copsy warns and keeps the Git checkout and caller's directory;
 retry with `copsy add <branch> --herdr` inside Herdr. It does not grant repository
 trust automatically.
+
+`switch --herdr` and interactive selection also keep the caller in place and
+register the selected checkout. Setup and optional launch commands run against
+the target checkout without changing the calling shell's directory. Reload shell
+integration with `eval "$(command copsy init zsh)"` (or `bash`) after upgrading.
+To keep the caller's directory valid, `close --herdr` is refused and
+`remove --herdr` cannot delete the calling checkout; remove it from another workspace.
 
 Run `copsy config global` to create the global configuration interactively at
 `~/.config/copsy/config.toml` (respects `$XDG_CONFIG_HOME`). It configures the

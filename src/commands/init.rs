@@ -60,10 +60,10 @@ fn shell_function() -> String {
             local tool="${entry%%	*}"
             local dir="${entry#*	}"
             case "$tool" in
-                code)   code -- "$dir" ;;
-                cursor) cursor -- "$dir" ;;
-                claude) claude ;;
-                codex)  codex ;;
+                code)   (code -- "$dir") ;;
+                cursor) (cursor -- "$dir") ;;
+                claude) (cd "$dir" && claude) ;;
+                codex)  (cd "$dir" && codex) ;;
             esac
         done
     fi
@@ -127,7 +127,7 @@ _copsy() {
     local -a args
 
     args=(
-        '--herdr[Use Herdr paths and register child workspaces inside Herdr]'
+        '--herdr[Keep the caller in place and use Herdr workspaces]'
         '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
         '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
         '--code[Open in VS Code]'
@@ -168,7 +168,7 @@ _copsy() {
             ;;
         args)
             local -a herdr_flags
-            herdr_flags=('--herdr[Use Herdr paths and register child workspaces inside Herdr]')
+            herdr_flags=('--herdr[Keep the caller in place and use Herdr workspaces]')
             local -a launch_flags
             launch_flags=(
                 '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
