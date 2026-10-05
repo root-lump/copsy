@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "copsy", version, about = "Git worktree management CLI")]
 pub struct Cli {
-    /// Create worktrees using Herdr's directory and naming rules (overrides copsy layout)
+    /// Use Herdr's worktree layout and register child workspaces when running inside Herdr
     #[arg(long, global = true)]
     pub herdr: bool,
 

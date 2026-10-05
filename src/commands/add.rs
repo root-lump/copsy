@@ -45,13 +45,17 @@ pub fn run(
                 );
             }
             info!("Worktree already exists at {}", worktree_path.display());
-            return worktree::transition(
+            worktree::transition(
                 &worktree_path,
                 &config,
                 options,
                 SetupContext::Existing,
                 || Ok(()),
-            );
+            )?;
+            if herdr {
+                herdr::open_workspace(&main_worktree, &worktree_path);
+            }
+            return Ok(());
         }
         bail!(
             "Directory {} already exists but is not a worktree",
@@ -87,5 +91,9 @@ pub fn run(
         options,
         SetupContext::Created(kind),
         || git::add_worktree(&worktree_path, branch, kind.creates_branch(), from),
-    )
+    )?;
+    if herdr {
+        herdr::open_workspace(&main_worktree, &worktree_path);
+    }
+    Ok(())
 }

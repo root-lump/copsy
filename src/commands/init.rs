@@ -127,7 +127,7 @@ _copsy() {
     local -a args
 
     args=(
-        '--herdr[Use Herdr worktree paths]'
+        '--herdr[Use Herdr paths and register child workspaces inside Herdr]'
         '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
         '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
         '--code[Open in VS Code]'
@@ -168,7 +168,7 @@ _copsy() {
             ;;
         args)
             local -a herdr_flags
-            herdr_flags=('--herdr[Use Herdr worktree paths]')
+            herdr_flags=('--herdr[Use Herdr paths and register child workspaces inside Herdr]')
             local -a launch_flags
             launch_flags=(
                 '(-c --claude)'{-c,--claude}'[Launch claude after switching]'

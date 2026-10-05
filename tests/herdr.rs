@@ -49,6 +49,10 @@ impl Repository {
             .env("USERPROFILE", &self.home)
             .env("XDG_CONFIG_HOME", &self.config)
             .env_remove("HERDR_CONFIG_PATH")
+            .env_remove("HERDR_ENV")
+            .env_remove("HERDR_WORKSPACE_ID")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("HERDR_API_SOCKET")
             .env("GIT_CONFIG_GLOBAL", self.root.join("no-global-config"))
             .env("GIT_CONFIG_NOSYSTEM", "1");
         command
@@ -110,6 +114,180 @@ fn assert_target(output: &Output, target: &Path, branch: &str) {
     assert!(target.join(".git").is_file());
     let actual = git(target, &["branch", "--show-current"]);
     assert_eq!(String::from_utf8_lossy(&actual.stdout).trim(), branch);
+}
+
+#[cfg(unix)]
+fn install_mock_herdr(bin: &Path, fail: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(bin).unwrap();
+    let path = bin.join("herdr");
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HERDR_TEST_LOG\"\n\
+             [ -f \"$6/.git\" ] || exit 9\n\
+             printf '%s\\n' \"$HERDR_SOCKET_PATH\" > \"$HERDR_TEST_CONTEXT\"\n\
+             printf '{{\"result\":{{\"workspace\":\"w2\"}}}}\\n'\n\
+             {}\n",
+            if fail {
+                "printf 'server unavailable\\n' >&2; exit 1"
+            } else {
+                "exit 0"
+            }
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn mock_session_command(repo: &Repository, cwd: &Path, bin: &Path) -> Command {
+    let mut paths = vec![bin.to_path_buf()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut command = repo.command(cwd);
+    command
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HERDR_ENV", "1")
+        .env("HERDR_WORKSPACE_ID", "w7")
+        .env("HERDR_SOCKET_PATH", repo.root.join("session.sock"))
+        .env("HERDR_TEST_LOG", repo.root.join("herdr-call"))
+        .env("HERDR_TEST_CONTEXT", repo.root.join("herdr-context"));
+    command
+}
+
+#[cfg(unix)]
+fn assert_registration(repo: &Repository, target: &Path) {
+    let arguments = fs::read_to_string(repo.root.join("herdr-call")).unwrap();
+    assert_eq!(
+        arguments.lines().collect::<Vec<_>>(),
+        [
+            "worktree",
+            "open",
+            "--cwd",
+            repo.main.to_str().unwrap(),
+            "--path",
+            target.to_str().unwrap(),
+            "--no-focus",
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-context"))
+            .unwrap()
+            .trim(),
+        repo.root.join("session.sock").to_str().unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn herdr_registers_new_and_reused_worktrees_from_the_repository_parent() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin with spaces");
+    install_mock_herdr(&bin, false);
+    let target = repo.default_worktree("feature-register");
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "Feature/Register", "--herdr"])
+        .output()
+        .unwrap();
+    assert_target(&output, &target, "Feature/Register");
+    assert_registration(&repo, &target);
+    fs::remove_file(repo.root.join("herdr-call")).unwrap();
+    // A caller in a linked checkout must still identify the main parent.
+    let output = mock_session_command(&repo, &target, &bin)
+        .args(["add", "Feature/Register", "--herdr"])
+        .output()
+        .unwrap();
+    assert_target(&output, &target, "Feature/Register");
+    assert_registration(&repo, &target);
+}
+
+#[cfg(unix)]
+#[test]
+fn herdr_registration_failure_preserves_the_checkout_carry_and_retry() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, true);
+    fs::write(repo.main.join("local.txt"), "keep this change").unwrap();
+    let target = repo.default_worktree("feature-retry");
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "Feature/Retry", "--herdr", "--carry"])
+        .output()
+        .unwrap();
+    assert_target(&output, &target, "Feature/Retry");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Herdr workspace registration failed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("server unavailable"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(target.join("local.txt")).unwrap(),
+        "keep this change"
+    );
+    assert!(!repo.main.join("local.txt").exists());
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["add", "Feature/Retry", "--herdr"])
+        .output()
+        .unwrap();
+    assert_target(&output, &target, "Feature/Retry");
+    assert_registration(&repo, &target);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("registration failed"));
+}
+
+#[cfg(unix)]
+#[test]
+fn outside_herdr_and_ordinary_mode_do_not_register_workspaces() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .env("HERDR_ENV", "0")
+        .args(["new", "Feature/Outside", "--herdr"])
+        .output()
+        .unwrap();
+    assert_target(
+        &output,
+        &repo.default_worktree("feature-outside"),
+        "Feature/Outside",
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("registration requires running copsy inside Herdr")
+    );
+    assert!(!repo.root.join("herdr-call").exists());
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "ordinary"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!repo.root.join("herdr-call").exists());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Herdr"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_slug_collision_does_not_register_another_branch() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "Feature/Collision", "--herdr"])
+        .output()
+        .unwrap();
+    assert_target(
+        &output,
+        &repo.default_worktree("feature-collision"),
+        "Feature/Collision",
+    );
+    fs::remove_file(repo.root.join("herdr-call")).unwrap();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "feature-collision", "--herdr"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!repo.root.join("herdr-call").exists());
 }
 
 #[test]
@@ -425,15 +603,13 @@ fn pr_creation_forwards_herdr_without_using_network_or_real_gh() {
     let gh = bin.join("gh");
     fs::write(&gh, "#!/bin/sh\nif [ \"$1\" = pr ] && [ \"$2\" = view ]; then printf 'Feature/PR\\n'; else exit 1; fi\n").unwrap();
     fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut paths = vec![bin];
-    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let output = repo
-        .command(&repo.main)
-        .env("PATH", std::env::join_paths(paths).unwrap())
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
         .args(["pr", "123", "--herdr"])
         .output()
         .unwrap();
     assert_target(&output, &repo.default_worktree("feature-pr"), "Feature/PR");
+    assert_registration(&repo, &repo.default_worktree("feature-pr"));
 }
 
 #[cfg(unix)]

@@ -2,10 +2,51 @@
 //! https://github.com/herdrdev/herdr/tree/v0.9.1/src
 
 use crate::git;
+use crate::info;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+pub fn open_workspace(source: &Path, target: &Path) {
+    if std::env::var_os("HERDR_ENV").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        info!(
+            "Herdr path created/reused; workspace registration requires running copsy inside Herdr"
+        );
+        return;
+    }
+    if let Err(error) = register_workspace(source, target) {
+        // Git creation and carry have already succeeded. Preserve that checkout
+        // and navigation even when the session API is unavailable; add can retry.
+        info!("Warning: worktree is ready, but Herdr workspace registration failed: {error:#}");
+        info!("Retry inside Herdr with: copsy add <branch> --herdr");
+    }
+}
+
+fn register_workspace(source: &Path, target: &Path) -> Result<()> {
+    // Matching the directory layout does not create sidebar membership. Herdr's
+    // worktree.open API records the parent and child relationships. An explicit
+    // repo parent avoids another client's focused workspace and linked sources.
+    let output = Command::new("herdr")
+        .args(["worktree", "open", "--cwd"])
+        .arg(source)
+        .arg("--path")
+        .arg(target)
+        .arg("--no-focus")
+        .stdin(Stdio::null())
+        .output()
+        .context("Failed to run herdr worktree open")?;
+    if !output.status.success() {
+        bail!(
+            "herdr worktree open failed ({}): {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+        );
+    }
+    Ok(())
+}
 
 #[derive(Default, Deserialize)]
 struct HerdrConfig {
