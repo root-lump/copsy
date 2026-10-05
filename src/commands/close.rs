@@ -5,7 +5,12 @@ use crate::info;
 use crate::output;
 use anyhow::{Result, bail};
 
-pub fn run(with_branch: bool) -> Result<()> {
+pub fn run(with_branch: bool, herdr: bool) -> Result<()> {
+    if herdr {
+        bail!(
+            "--herdr keeps the calling checkout in place; remove it from another workspace instead"
+        );
+    }
     let current_dir = std::env::current_dir()?;
     let main_path = git::main_worktree_path()?;
     if current_dir.starts_with(&main_path) {

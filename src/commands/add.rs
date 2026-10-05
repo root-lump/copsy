@@ -2,6 +2,7 @@ use crate::cli::TransitionOptions;
 use crate::commands::worktree::{self, CreationKind, SetupContext};
 use crate::config::Config;
 use crate::git;
+use crate::herdr;
 use crate::info;
 use anyhow::{Result, bail};
 use colored::Colorize;
@@ -11,35 +12,51 @@ pub fn run(
     kind: CreationKind,
     from: Option<&str>,
     options: &TransitionOptions,
+    herdr: bool,
 ) -> Result<()> {
-    // Anchored to the main worktree, not the inherited current directory: running
-    // this from inside a worktree would otherwise nest the new one under its sibling.
+    // Anchor the ordinary layout to the main worktree: using the current
+    // directory would nest newly created worktrees under their siblings.
     let main_worktree = git::main_worktree_path()?;
-    let repo_name = git::repository_name(&main_worktree);
     let config = Config::load()?;
-    let base_dir = config.base_dir();
-    let worktree_path = git::worktree_dir_name(
-        &repo_name,
-        &main_worktree,
-        branch,
-        base_dir.as_deref(),
-        config.layout(),
-    );
+    let worktree_path = if herdr {
+        herdr::worktree_path(branch)?
+    } else {
+        git::worktree_dir_name(
+            &git::repository_name(&main_worktree),
+            &main_worktree,
+            branch,
+            config.base_dir().as_deref(),
+            config.layout(),
+        )
+    };
 
     if worktree_path.exists() {
         let worktrees = git::list_worktrees()?;
-        if worktrees
+        if let Some(existing) = worktrees
             .iter()
-            .any(|worktree| worktree.path == worktree_path)
+            .find(|worktree| worktree.path == worktree_path)
         {
+            // Herdr's lowercase slugs can map distinct Git branches to one path.
+            if herdr && existing.branch != branch {
+                bail!(
+                    "Herdr worktree path {} is already used by branch '{}'",
+                    worktree_path.display(),
+                    existing.branch
+                );
+            }
             info!("Worktree already exists at {}", worktree_path.display());
-            return worktree::transition(
+            worktree::transition(
                 &worktree_path,
                 &config,
                 options,
                 SetupContext::Existing,
+                !herdr,
                 || Ok(()),
-            );
+            )?;
+            if herdr {
+                herdr::open_workspace(&main_worktree, &worktree_path);
+            }
+            return Ok(());
         }
         bail!(
             "Directory {} already exists but is not a worktree",
@@ -74,6 +91,11 @@ pub fn run(
         &config,
         options,
         SetupContext::Created(kind),
+        !herdr,
         || git::add_worktree(&worktree_path, branch, kind.creates_branch(), from),
-    )
+    )?;
+    if herdr {
+        herdr::open_workspace(&main_worktree, &worktree_path);
+    }
+    Ok(())
 }

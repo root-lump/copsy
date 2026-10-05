@@ -1,8 +1,9 @@
 use crate::config::WorktreeLayout;
 use crate::repository_path::RepositoryPath;
 use anyhow::{Context, Result, bail};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub struct WorktreeInfo {
     pub path: PathBuf,
@@ -31,6 +32,9 @@ fn git_output(args: &[&str]) -> Result<String> {
 fn git_run(args: &[&str]) -> Result<()> {
     let status = Command::new("git")
         .args(args)
+        // Git prints checkout summaries to stdout; keep the shell marker
+        // channel clean while still displaying those messages to the user.
+        .stdout(Stdio::from(io::stderr()))
         .status()
         .with_context(|| format!("Failed to run: git {}", args.join(" ")))?;
     if !status.success() {
@@ -163,6 +167,34 @@ fn parse_ignored_paths(output: &[u8]) -> Vec<RepositoryPath> {
 /// worktrees are named.
 pub fn repository_name(main_worktree: &Path) -> String {
     repository_name_or_directory(remote_repository_name(main_worktree), main_worktree)
+}
+
+/// Herdr identifies repositories by their local Git common directory, not origin.
+pub fn herdr_repository_name() -> Result<String> {
+    let common_dir = git_common_dir()?;
+    let common_dir = common_dir.canonicalize().unwrap_or(common_dir);
+    let label_path = match common_dir.file_name().and_then(|name| name.to_str()) {
+        Some(".git") => common_dir.parent().unwrap_or(&common_dir),
+        Some(".bare") => {
+            // Embedded bare clones may have a container .git file pointing at
+            // .bare. A standalone .bare uses its own name in Herdr instead.
+            common_dir
+                .parent()
+                .filter(|parent| {
+                    git_output_in(parent, &["rev-parse", "--absolute-git-dir"])
+                        .ok()
+                        .map(PathBuf::from)
+                        .is_some_and(|path| path.canonicalize().unwrap_or(path) == common_dir)
+                })
+                .unwrap_or(&common_dir)
+        }
+        _ => &common_dir,
+    };
+    Ok(label_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repo")
+        .to_string())
 }
 
 fn repository_name_or_directory(remote_name: Option<String>, main_worktree: &Path) -> String {

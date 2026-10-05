@@ -23,5 +23,9 @@ jobs:
         run: cargo fmt --check
       - name: Lint
         run: cargo clippy -- -D warnings
+      - name: Install shell test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes zsh
       - name: Test
         run: cargo test

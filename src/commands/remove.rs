@@ -6,7 +6,13 @@ use crate::output;
 use crate::theme;
 use anyhow::{Result, bail};
 
-pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Result<()> {
+pub fn run(
+    name: Option<&str>,
+    with_branch: bool,
+    all: bool,
+    force: bool,
+    herdr: bool,
+) -> Result<()> {
     let worktrees = git::list_worktrees()?;
     let main_path = git::main_worktree_path()?;
     let config = Config::load()?;
@@ -30,6 +36,9 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Res
         let current_wt = current_dir
             .as_ref()
             .and_then(|cd| removable.iter().find(|w| cd.starts_with(&w.path)));
+        if herdr && current_wt.is_some() {
+            bail!("--herdr cannot remove the calling checkout; run from another workspace");
+        }
 
         let mut failed_worktrees = Vec::new();
         let mut failed_branches = Vec::new();
@@ -102,6 +111,9 @@ pub fn run(name: Option<&str>, with_branch: bool, all: bool, force: bool) -> Res
         .is_some_and(|cd| cd.starts_with(&target.path));
 
     if is_current {
+        if herdr {
+            bail!("--herdr cannot remove the calling checkout; run from another workspace");
+        }
         if !force {
             let status = git::get_status(&target.path)?;
             if !status.is_empty() {

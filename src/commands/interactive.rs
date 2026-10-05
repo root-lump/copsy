@@ -3,12 +3,13 @@ use crate::commands::add;
 use crate::commands::worktree::{self, CreationKind, SetupContext};
 use crate::config::Config;
 use crate::git;
+use crate::herdr;
 use crate::info;
 use crate::theme;
 use anyhow::Result;
 use colored::Colorize;
 
-pub fn run(options: &TransitionOptions) -> Result<()> {
+pub fn run(options: &TransitionOptions, herdr: bool) -> Result<()> {
     let (worktrees, local_branches, remote_branches) =
         crate::spinner::with_spinner("Loading branches...", || {
             let wt = git::list_worktrees();
@@ -67,10 +68,20 @@ pub fn run(options: &TransitionOptions) -> Result<()> {
         ItemKind::ExistingWorktree(path) => {
             let config = Config::load()?;
             info!("{}", "Switching to worktree".green());
-            worktree::transition(path, &config, options, SetupContext::Existing, || Ok(()))?;
+            worktree::transition(
+                path,
+                &config,
+                options,
+                SetupContext::Existing,
+                !herdr,
+                || Ok(()),
+            )?;
+            if herdr {
+                herdr::open_workspace(&main_path, path);
+            }
         }
         ItemKind::NewWorktree(branch) => {
-            add::run(branch, CreationKind::Add, None, options)?;
+            add::run(branch, CreationKind::Add, None, options, herdr)?;
         }
     }
 

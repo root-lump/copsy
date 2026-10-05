@@ -5,7 +5,7 @@ use crate::git;
 use crate::theme;
 use anyhow::Result;
 
-pub fn run(target: Option<&str>, options: &TransitionOptions) -> Result<()> {
+pub fn run(target: Option<&str>, options: &TransitionOptions, herdr: bool) -> Result<()> {
     let branch = match target {
         Some(t) => git::fetch_pr(t)?,
         None => match select_pr_interactive()? {
@@ -14,7 +14,7 @@ pub fn run(target: Option<&str>, options: &TransitionOptions) -> Result<()> {
         },
     };
 
-    add::run(&branch, CreationKind::Pr, None, options)
+    add::run(&branch, CreationKind::Pr, None, options, herdr)
 }
 
 fn select_pr_interactive() -> Result<Option<String>> {

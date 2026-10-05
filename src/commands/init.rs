@@ -60,10 +60,10 @@ fn shell_function() -> String {
             local tool="${entry%%	*}"
             local dir="${entry#*	}"
             case "$tool" in
-                code)   code -- "$dir" ;;
-                cursor) cursor -- "$dir" ;;
-                claude) claude ;;
-                codex)  codex ;;
+                code)   (code -- "$dir") ;;
+                cursor) (cursor -- "$dir") ;;
+                claude) (cd "$dir" && claude) ;;
+                codex)  (cd "$dir" && codex) ;;
             esac
         done
     fi
@@ -127,6 +127,7 @@ _copsy() {
     local -a args
 
     args=(
+        '--herdr[Keep the caller in place and use Herdr workspaces]'
         '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
         '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
         '--code[Open in VS Code]'
@@ -166,6 +167,8 @@ _copsy() {
             _describe 'subcommand' subcmds && ret=0
             ;;
         args)
+            local -a herdr_flags
+            herdr_flags=('--herdr[Keep the caller in place and use Herdr workspaces]')
             local -a launch_flags
             launch_flags=(
                 '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
@@ -204,31 +207,34 @@ _copsy() {
             done
             case "$subcommand" in
                 new)
-                    _arguments -s -S $launch_flags $carry_flags $setup_flags '--from=[Base branch to create from (default\: current HEAD)]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
+                    _arguments -s -S $herdr_flags $launch_flags $carry_flags $setup_flags '--from=[Base branch to create from (default\: current HEAD)]:branch:_copsy_branches' '1:branch:_copsy_branches' && ret=0
                     ;;
                 add)
-                    _arguments -s -S $launch_flags $carry_flags $setup_flags '1:branch:_copsy_branches' && ret=0
+                    _arguments -s -S $herdr_flags $launch_flags $carry_flags $setup_flags '1:branch:_copsy_branches' && ret=0
                     ;;
                 switch|sw)
-                    _arguments -s -S $launch_flags $carry_flags $setup_flags '1:worktree:_copsy_worktrees' && ret=0
+                    _arguments -s -S $herdr_flags $launch_flags $carry_flags $setup_flags '1:worktree:_copsy_worktrees' && ret=0
+                    ;;
+                list|ls|status)
+                    _arguments -s -S $herdr_flags && ret=0
                     ;;
                 close)
-                    _arguments -s -S '--with-branch[Also delete the local branch]' && ret=0
+                    _arguments -s -S $herdr_flags '--with-branch[Also delete the local branch]' && ret=0
                     ;;
                 remove|rm)
-                    _arguments -s -S '--with-branch[Also delete the local branch]' '--all[Remove all worktrees]' '--force[Discard uncommitted changes and delete unmerged branches]' '1:worktree:_copsy_worktrees' && ret=0
+                    _arguments -s -S $herdr_flags '--with-branch[Also delete the local branch]' '--all[Remove all worktrees]' '--force[Discard uncommitted changes and delete unmerged branches]' '1:worktree:_copsy_worktrees' && ret=0
                     ;;
                 pr)
-                    _arguments -s -S $launch_flags $setup_flags '1:PR number or URL:' && ret=0
+                    _arguments -s -S $herdr_flags $launch_flags $setup_flags '1:PR number or URL:' && ret=0
                     ;;
                 init)
-                    _arguments '1:shell:(zsh bash)' && ret=0
+                    _arguments $herdr_flags '1:shell:(zsh bash)' && ret=0
                     ;;
                 config)
-                    _arguments '1:config command:(repo global)' && ret=0
+                    _arguments $herdr_flags '1:config command:(repo global)' && ret=0
                     ;;
                 setup)
-                    _arguments && ret=0
+                    _arguments $herdr_flags && ret=0
                     ;;
             esac
             ;;
@@ -274,17 +280,22 @@ _copsy_bash() {
 
     if [[ -z "$subcommand" ]]; then
         if [[ "${cur}" == -* ]]; then
-            COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open -V --version" -- "${cur}"))
+            COMPREPLY=($(compgen -W "--herdr --carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open -V --version" -- "${cur}"))
         else
             COMPREPLY=($(compgen -W "${subcmds}" -- "${cur}"))
         fi
         return
     fi
 
+    # Global flags remain available even for commands without local flags.
+    if [[ "${cur}" == -* ]]; then
+        COMPREPLY=($(compgen -W "--herdr" -- "${cur}"))
+    fi
+
     case "$subcommand" in
         new)
             if [[ "${cur}" == -* ]]; then
-                COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup --from -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+                COMPREPLY=($(compgen -W "--herdr --carry --no-carry --setup --no-setup --from -c --claude -x --codex --code --cursor --open" -- "${cur}"))
             elif [[ "$prev" != "--open" ]]; then
                 local branches
                 branches="$(git branch --format='%(refname:short)' 2>/dev/null)"
@@ -293,7 +304,7 @@ _copsy_bash() {
             ;;
         add)
             if [[ "${cur}" == -* ]]; then
-                COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+                COMPREPLY=($(compgen -W "--herdr --carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
             elif [[ "$prev" != "--open" ]]; then
                 local branches
                 branches="$(git branch --format='%(refname:short)' 2>/dev/null)"
@@ -302,7 +313,7 @@ _copsy_bash() {
             ;;
         switch|sw)
             if [[ "${cur}" == -* ]]; then
-                COMPREPLY=($(compgen -W "--carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+                COMPREPLY=($(compgen -W "--herdr --carry --no-carry --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
             elif [[ "$prev" != "--open" ]]; then
                 local worktrees
                 worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"
@@ -310,11 +321,11 @@ _copsy_bash() {
             fi
             ;;
         close)
-            COMPREPLY=($(compgen -W "--with-branch" -- "${cur}"))
+            COMPREPLY=($(compgen -W "--herdr --with-branch" -- "${cur}"))
             ;;
         remove|rm)
             if [[ "${cur}" == -* ]]; then
-                COMPREPLY=($(compgen -W "--with-branch --all --force" -- "${cur}"))
+                COMPREPLY=($(compgen -W "--herdr --with-branch --all --force" -- "${cur}"))
             else
                 local worktrees
                 worktrees="$(git worktree list --porcelain 2>/dev/null | grep '^branch ' | sed 's|^branch refs/heads/||')"
@@ -322,17 +333,17 @@ _copsy_bash() {
             fi
             ;;
         init)
-            if [[ ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
+            if [[ "${cur}" != -* && ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
                 COMPREPLY=($(compgen -W "zsh bash" -- "${cur}"))
             fi
             ;;
         pr)
             if [[ "${cur}" == -* ]]; then
-                COMPREPLY=($(compgen -W "--setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
+                COMPREPLY=($(compgen -W "--herdr --setup --no-setup -c --claude -x --codex --code --cursor --open" -- "${cur}"))
             fi
             ;;
         config)
-            if [[ ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
+            if [[ "${cur}" != -* && ${COMP_CWORD} -eq $((subcommand_index + 1)) ]]; then
                 COMPREPLY=($(compgen -W "repo global" -- "${cur}"))
             fi
             ;;

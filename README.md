@@ -116,6 +116,60 @@ copsy pr 42 --cursor                # Checkout PR #42 + open Cursor
 
 ## Configuration
 
+### Herdr-compatible worktrees
+
+Use `--herdr` to create worktrees with [Herdr](https://github.com/herdrdev/herdr)'s
+directory and naming rules:
+
+```sh
+copsy new Feature/Login --herdr
+copsy --herdr add fix/typo
+copsy pr 123 --herdr
+copsy --herdr                     # Interactive branch selection
+```
+
+The flag works before or after a subcommand. For worktree creation it overrides
+copsy's `worktree.base_dir` and `worktree.layout` for that invocation. Without
+the flag, copsy keeps its usual layout. Other commands still discover existing
+worktrees through Git, regardless of their directory layout.
+
+By default, a clone at `~/dev/myapp` creates `Feature/Login` at
+`~/.herdr/worktrees/myapp/feature-login`. The root comes from Herdr's
+`[worktrees].directory` in `~/.config/herdr/config.toml` (or
+`$XDG_CONFIG_HOME/herdr/config.toml`); `HERDR_CONFIG_PATH` overrides the config
+file location. A missing file or unset directory uses `~/.herdr/worktrees`.
+`~` and `~/` expand to the home directory; relative roots resolve against the
+invoking working directory. Invalid or unreadable settings cause an error.
+
+The repository name follows the local Git common directory rather than the
+`origin` remote, so a clone renamed to `myapp-local` uses `myapp-local`.
+Branch slugs lowercase ASCII letters, replace runs of non-ASCII-alphanumeric
+characters with `-`, and strip leading/trailing dashes. An empty slug uses
+`worktree`. Different branches that produce the same slug cannot share a
+directory; copsy reports a collision instead of switching to the wrong branch.
+
+This matches Herdr v0.9.1's path rules. When run inside Herdr (`HERDR_ENV=1`),
+`new`, `add`, `pr`, and interactive creation also call `herdr worktree open` to
+register the checkout as a child workspace of the repository's parent space.
+The calling terminal stays in its original directory: `--herdr` never requests
+a shell `cd`, including when reusing a checkout or registration fails. This
+preserves focus and uses the main checkout as the source, including when
+invoked from a linked worktree. Reusing an existing checkout retries registration.
+Herdr's JSON responses do not enter the shell navigation marker channel.
+
+Outside Herdr, the flag creates the same paths and prints a notice that workspace
+registration was skipped. The Herdr executable is only required for registration.
+If registration fails, copsy warns and keeps the Git checkout and caller's directory;
+retry with `copsy add <branch> --herdr` inside Herdr. It does not grant repository
+trust automatically.
+
+`switch --herdr` and interactive selection also keep the caller in place and
+register the selected checkout. Setup and optional launch commands run against
+the target checkout without changing the calling shell's directory. Reload shell
+integration with `eval "$(command copsy init zsh)"` (or `bash`) after upgrading.
+To keep the caller's directory valid, `close --herdr` is refused and
+`remove --herdr` cannot delete the calling checkout; remove it from another workspace.
+
 Run `copsy config global` to create the global configuration interactively at
 `~/.config/copsy/config.toml` (respects `$XDG_CONFIG_HOME`). It configures the
 default worktree directory, the directory layout, and whether uncommitted
@@ -214,7 +268,7 @@ by default:
 The directory holding the nested worktrees is removed once its last worktree is
 gone.
 
-Worktrees are always placed next to the main worktree (or under `base_dir`),
+Without `--herdr`, worktrees are always placed next to the main worktree (or under `base_dir`),
 including when `copsy new` or `copsy add` is run from inside another worktree.
 
 ## License
