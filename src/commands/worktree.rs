@@ -57,8 +57,8 @@ where
     // in its parent checkout even when the session API reports an error.
     if change_directory {
         output::request_cd(target);
+        launcher::launch_tools(options.launch(), target);
     }
-    launcher::launch_tools(options.launch(), target, change_directory);
     Ok(())
 }
 

@@ -126,6 +126,8 @@ copsy new Feature/Login --herdr
 copsy --herdr add fix/typo
 copsy pr 123 --herdr
 copsy --herdr                     # Interactive branch selection
+copsy new feature --herdr --claude --codex --code
+copsy add feature --herdr --cursor --open 'npm run dev'
 ```
 
 The flag works before or after a subcommand. For worktree creation it overrides
@@ -158,15 +160,31 @@ invoked from a linked worktree. Reusing an existing checkout retries registratio
 Herdr's JSON responses do not enter the shell navigation marker channel.
 
 Outside Herdr, the flag creates the same paths and prints a notice that workspace
-registration was skipped. The Herdr executable is only required for registration.
+registration was skipped. Launch options are skipped too; tools never fall back to
+the calling terminal. The Herdr executable is required for registration and launches.
 If registration fails, copsy warns and keeps the Git checkout and caller's directory;
 retry with `copsy add <branch> --herdr` inside Herdr. It does not grant repository
 trust automatically.
 
 `switch --herdr` and interactive selection also keep the caller in place and
-register the selected checkout. Setup and optional launch commands run against
-the target checkout without changing the calling shell's directory. Reload shell
-integration with `eval "$(command copsy init zsh)"` (or `bash`) after upgrading.
+register the selected checkout. Combine `--herdr` with `--claude`, `--codex`,
+`--code`, `--cursor`, or `--open CMD`: after setup succeeds, each selected tool
+gets a separate labeled tab inside the registered child workspace, using the
+target checkout as its working directory. Multiple AI tools start independently.
+Reusing a workspace creates fresh tabs instead of sending commands into an
+existing pane, which may already contain a running agent. Focus stays unchanged.
+VS Code and Cursor are launched from those tabs and open their usual external
+editor windows; their GUI is not embedded in Herdr.
+
+Herdr command submission is asynchronous: inspect the new tabs for missing
+executables, shell startup prompts, or application errors. `--open` uses the
+child pane's configured shell, so commands must be valid for that shell. If a
+launch fails, the worktree is kept and other selected tools are still attempted.
+Inspect the tabs before retrying only the failed options to avoid duplicate
+sessions. Failed registration never launches a tool elsewhere.
+
+Reload shell integration with `eval "$(command copsy init zsh)"` (or `bash`)
+after upgrading; the new launch dispatcher requires the updated shell function.
 To keep the caller's directory valid, `close --herdr` is refused and
 `remove --herdr` cannot delete the calling checkout; remove it from another workspace.
 

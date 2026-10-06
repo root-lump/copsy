@@ -54,7 +54,7 @@ pub fn run(
                 || Ok(()),
             )?;
             if herdr {
-                herdr::open_workspace(&main_worktree, &worktree_path);
+                herdr::open_workspace(&main_worktree, &worktree_path, options.launch());
             }
             return Ok(());
         }
@@ -95,7 +95,7 @@ pub fn run(
         || git::add_worktree(&worktree_path, branch, kind.creates_branch(), from),
     )?;
     if herdr {
-        herdr::open_workspace(&main_worktree, &worktree_path);
+        herdr::open_workspace(&main_worktree, &worktree_path, options.launch());
     }
     Ok(())
 }

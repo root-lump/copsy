@@ -126,20 +126,62 @@ fn install_mock_herdr(bin: &Path, fail: bool) {
     use std::os::unix::fs::PermissionsExt;
     fs::create_dir_all(bin).unwrap();
     let path = bin.join("herdr");
+    let script = r#"#!/bin/sh
+case "$1 $2" in
+    'worktree open')
+        printf '%s\n' "$@" > "$HERDR_TEST_LOG"
+        [ -f "$6/.git" ] || exit 9
+        printf '%s\n' "$HERDR_SOCKET_PATH" > "$HERDR_TEST_CONTEXT"
+        if [ "$FAIL_REGISTRATION" = 1 ]; then
+            printf 'server unavailable\n' >&2
+            exit 1
+        fi
+        if [ "$HERDR_TEST_BAD_REGISTRATION" = 1 ]; then
+            printf 'invalid json\n'
+        else
+            printf '{"result":{"workspace":{"workspace_id":"w2"}}}\n'
+        fi
+        ;;
+    'tab create')
+        [ "$3" = --workspace ] && [ "$4" = w2 ] || exit 10
+        [ "$5" = --cwd ] && [ "$7" = --label ] && [ "$9" = --no-focus ] || exit 11
+        count=0
+        [ ! -f "$HERDR_TEST_LOG.count" ] || count=$(cat "$HERDR_TEST_LOG.count")
+        count=$((count + 1))
+        printf '%s' "$count" > "$HERDR_TEST_LOG.count"
+        printf '%s\n' "$8" >> "$HERDR_TEST_LOG.labels"
+        printf '%s' "$6" > "$HERDR_TEST_LOG.w2:p$count"
+        if [ "$HERDR_TEST_FAIL_TAB" = "$8" ]; then
+            printf 'tab unavailable\n' >&2
+            exit 1
+        fi
+        if [ "$HERDR_TEST_BAD_TAB" = 1 ]; then
+            printf 'invalid json\n'
+        else
+            workspace="${HERDR_TEST_WRONG_WORKSPACE:-w2}"
+            printf '{"result":{"root_pane":{"workspace_id":"%s","pane_id":"w2:p%s"}}}\n' "$workspace" "$count"
+        fi
+        ;;
+    'pane run')
+        [ "$#" = 4 ] || exit 12
+        printf '%s\n' "$3" >> "$HERDR_TEST_LOG.panes"
+        printf '%s' "$4" > "$HERDR_TEST_LOG.$3.command"
+        if [ "$HERDR_TEST_FAIL_RUN" = "$4" ]; then
+            printf 'submission unavailable\n' >&2
+            exit 1
+        fi
+        if [ "$HERDR_TEST_EXECUTE" = 1 ]; then
+            directory=$(cat "$HERDR_TEST_LOG.$3")
+            (cd "$directory" && sh -c "$4") || exit $?
+        fi
+        # The real pane run CLI succeeds without stdout.
+        ;;
+    *) exit 13 ;;
+esac
+"#;
     fs::write(
         &path,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HERDR_TEST_LOG\"\n\
-             [ -f \"$6/.git\" ] || exit 9\n\
-             printf '%s\\n' \"$HERDR_SOCKET_PATH\" > \"$HERDR_TEST_CONTEXT\"\n\
-             printf '{{\"result\":{{\"workspace\":\"w2\"}}}}\\n'\n\
-             {}\n",
-            if fail {
-                "printf 'server unavailable\\n' >&2; exit 1"
-            } else {
-                "exit 0"
-            }
-        ),
+        script.replace("$FAIL_REGISTRATION", if fail { "1" } else { "0" }),
     )
     .unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -491,15 +533,23 @@ fn herdr_shell_transitions_and_tools_preserve_the_calling_directory() {
             "[setup]\ncommand = ['sh', '-c', 'pwd > setup.cwd']\n",
         )
         .unwrap();
+        for tool in ["claude", "codex", "code", "cursor"] {
+            use std::os::unix::fs::PermissionsExt;
+            let path = bin.join(tool);
+            fs::write(&path, format!(
+                "#!/bin/sh\n[ -f setup.cwd ] || exit 20\ncase '{tool}' in\ncode|cursor) [ \"$1\" = -- ] && [ \"$2\" = . ] || exit 21; printf '%s' \"$PWD\" > \"$COPSY_TEST_ROOT/{tool}.target\" ;;\n*) pwd > '{tool}.cwd' ;;\nesac\n"
+            )).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let init = repo.run(&repo.main, &["init", shell]);
         let script = repo.root.join("integration.sh");
         fs::write(&script, init.stdout).unwrap();
         let checks = r#"
 source "$1"
-claude() { pwd > claude.cwd; cd /; }
-codex() { pwd > codex.cwd; cd /; }
-code() { printf '%s' "$2" > "$COPSY_TEST_ROOT/code.target"; cd /; }
-cursor() { printf '%s' "$2" > "$COPSY_TEST_ROOT/cursor.target"; cd /; }
+claude() { exit 90; }
+codex() { exit 91; }
+code() { exit 92; }
+cursor() { exit 93; }
 before="$PWD"
 copsy new Feature/Stay --herdr --setup --claude --codex --code --cursor --open 'pwd > open.cwd; cd /' || exit 1
 [[ "$PWD" == "$before" ]] || exit 2
@@ -509,6 +559,7 @@ copsy switch Feature/Stay --herdr || exit 5
 [[ "$PWD" == "$before" ]] || exit 6
 copsy add Feature/Stay --herdr --open "printf '%s' \"it's working\" > comment.result # local note" || exit 9
 [[ "$PWD" == "$before" ]] || exit 10
+copsy add Feature/Stay --herdr --open $'printf first > multi.result\nprintf second >> multi.result' || exit 13
 copsy add Feature/Stay --herdr --open '' || exit 11
 [[ "$PWD" == "$before" ]] || exit 12
 copsy new Normal/Move || exit 7
@@ -539,6 +590,7 @@ printf '%s\n' "$PWD"
             .current_dir(&repo.main)
             .env("PATH", std::env::join_paths(paths).unwrap())
             .env("COPSY_TEST_ROOT", &repo.root)
+            .env("HERDR_TEST_EXECUTE", "1")
             .args(["-c", checks, "shell-test"])
             .arg(script)
             .output()
@@ -554,6 +606,10 @@ printf '%s\n' "$PWD"
             fs::read_to_string(target.join("comment.result")).unwrap(),
             "it's working",
             "{shell}: quoted command with a trailing comment"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("multi.result")).unwrap(),
+            "firstsecond"
         );
         for file in ["setup.cwd", "claude.cwd", "codex.cwd", "open.cwd"] {
             assert_eq!(
@@ -771,6 +827,23 @@ fn pr_creation_forwards_herdr_without_using_network_or_real_gh() {
         .unwrap();
     assert_target(&output, &repo.default_worktree("feature-pr"), "Feature/PR");
     assert_registration(&repo, &repo.default_worktree("feature-pr"));
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["pr", "123", "--herdr", "--claude", "--code"])
+        .output()
+        .unwrap();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["herdr-launch", &launch_request(&output)])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.labels")).unwrap(),
+        "VS Code\nClaude Code\n"
+    );
 }
 
 #[cfg(unix)]
@@ -802,5 +875,305 @@ done
         checked.status.success(),
         "{}",
         String::from_utf8_lossy(&checked.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn launch_request(output: &Output) -> String {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "{stdout}");
+    lines[0]
+        .strip_prefix("__COPSY_HERDR_LAUNCH__")
+        .unwrap()
+        .to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn herdr_launches_all_flags_in_distinct_child_tabs_and_reuses_no_panes() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let custom = "printf '%s' \"it's working\" > result\nprintf second >> result # note";
+    for command in ["new", "add", "switch"] {
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args([
+                "--code",
+                "--herdr",
+                command,
+                "Feature/Tools",
+                "--claude",
+                "--codex",
+                "--cursor",
+                "--open",
+                custom,
+            ])
+            .output()
+            .unwrap();
+        let request = launch_request(&output);
+        let parsed: serde_json::Value = serde_json::from_str(&request).unwrap();
+        assert_eq!(parsed["workspace_id"], "w2");
+        assert_eq!(
+            parsed["path"],
+            repo.default_worktree("feature-tools").to_str().unwrap()
+        );
+        assert_eq!(parsed["launch"]["open"], custom);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["herdr-launch", &request])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+    }
+    let expected = ["code -- .", "cursor -- .", "claude", "codex", custom];
+    let target = repo.default_worktree("feature-tools");
+    let panes = fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap();
+    assert_eq!(panes.lines().count(), 15);
+    for (index, pane) in panes.lines().enumerate() {
+        assert_eq!(pane, format!("w2:p{}", index + 1));
+        assert_eq!(
+            fs::read_to_string(repo.root.join(format!("herdr-call.{pane}"))).unwrap(),
+            target.to_str().unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(repo.root.join(format!("herdr-call.{pane}.command"))).unwrap(),
+            expected[index % 5]
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unavailable_herdr_never_emits_local_launches() {
+    for failure in ["outside", "registration", "json"] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, failure == "registration");
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .env("HERDR_ENV", if failure == "outside" { "0" } else { "1" })
+            .env(
+                "HERDR_TEST_BAD_REGISTRATION",
+                if failure == "json" { "1" } else { "0" },
+            )
+            .args([
+                "new",
+                "feature",
+                "--herdr",
+                "--claude",
+                "--codex",
+                "--code",
+                "--cursor",
+                "--open",
+                "touch wrong-place",
+            ])
+            .output()
+            .unwrap();
+        assert_target(&output, &repo.default_worktree("feature"), "feature");
+        assert!(!repo.root.join("herdr-call.count").exists());
+        assert!(!repo.main.join("wrong-place").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn malformed_or_wrong_workspace_tab_responses_submit_nothing() {
+    for (key, value) in [
+        ("HERDR_TEST_BAD_TAB", "1"),
+        ("HERDR_TEST_WRONG_WORKSPACE", "w7"),
+    ] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["new", "feature", "--herdr", "--claude"])
+            .output()
+            .unwrap();
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .env(key, value)
+            .args(["herdr-launch", &launch_request(&output)])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!repo.root.join("herdr-call.panes").exists());
+        assert!(repo.default_worktree("feature").join(".git").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_launches_are_not_retried_and_other_tools_still_launch() {
+    for (key, value, expected_panes) in [
+        ("HERDR_TEST_FAIL_TAB", "Claude Code", 1),
+        ("HERDR_TEST_FAIL_RUN", "claude", 2),
+    ] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["new", "feature", "--herdr", "--claude", "--codex"])
+            .output()
+            .unwrap();
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .env(key, value)
+            .args(["herdr-launch", &launch_request(&output)])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("failed to launch Claude Code"), "{stderr}");
+        assert!(
+            stderr.contains("Inspect its tabs before retrying"),
+            "{stderr}"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
+            "2"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.panes"))
+                .unwrap()
+                .lines()
+                .count(),
+            expected_panes
+        );
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.w2:p2.command")).unwrap(),
+            "codex"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_setup_prevents_child_launches_in_bash_and_zsh() {
+    for shell in ["bash", "zsh"] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        fs::write(
+            repo.main.join(".git/copsy.toml"),
+            "[setup]\ncommand = ['sh', '-c', 'exit 23']\n",
+        )
+        .unwrap();
+        let script = repo.root.join("integration.sh");
+        fs::write(&script, repo.run(&repo.main, &["init", shell]).stdout).unwrap();
+        let template = mock_session_command(&repo, &repo.main, &bin);
+        let mut command = Command::new(shell);
+        for (key, value) in template.get_envs() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+        let mut paths = vec![
+            bin,
+            Path::new(env!("CARGO_BIN_EXE_copsy"))
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let output = command.current_dir(&repo.main).env("PATH", std::env::join_paths(paths).unwrap())
+            .args(["-c", "source \"$1\"; before=\"$PWD\"; copsy new feature --herdr --setup --claude --codex --code && exit 90; [[ \"$before\" == \"$PWD\" ]]", "shell-test"])
+            .arg(script).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!repo.root.join("herdr-call.count").exists());
+        assert!(repo.default_worktree("feature").join(".git").exists());
+    }
+}
+
+#[test]
+fn ordinary_launch_markers_are_unchanged() {
+    let repo = Repository::new();
+    let output = repo.run(
+        &repo.main,
+        &[
+            "new",
+            "ordinary",
+            "--claude",
+            "--codex",
+            "--code",
+            "--cursor",
+            "--open",
+            "echo ordinary",
+        ],
+    );
+    assert!(output.status.success());
+    let target = repo.root.join("remote-name-ordinary");
+    let target = target.display();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "__COPSY_CD__{target}\n__COPSY_LAUNCH__code\t{target}\n__COPSY_LAUNCH__cursor\t{target}\n__COPSY_OPEN__echo ordinary\n__COPSY_LAUNCH__claude\t{target}\n__COPSY_LAUNCH__codex\t{target}\n"
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn interactive_selection_launches_in_new_and_reused_child_workspaces() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    git(&repo.main, &["branch", "Feature/Interactive"]);
+    let fzf = bin.join("fzf");
+    fs::write(&fzf, "#!/bin/sh\nsed -n '2p'\n").unwrap();
+    fs::set_permissions(&fzf, fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..2 {
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["--herdr", "--claude", "--codex"])
+            .output()
+            .unwrap();
+        let request = launch_request(&output);
+        assert_checkout(
+            &output,
+            &repo.default_worktree("feature-interactive"),
+            "Feature/Interactive",
+        );
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["herdr-launch", &request])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
+        "4"
+    );
+    fs::write(&fzf, "#!/bin/sh\ncat > /dev/null\nexit 130\n").unwrap();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["--herdr", "--claude"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
+        "4"
     );
 }

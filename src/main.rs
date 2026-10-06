@@ -73,6 +73,10 @@ fn main() -> Result<()> {
             root_transition.ensure_unused("close")?;
             commands::close::run(with_branch, herdr)?;
         }
+        Some(Command::HerdrLaunch { request }) => {
+            root_transition.ensure_unused("herdr-launch")?;
+            herdr::launch_tools(&request)?;
+        }
         Some(Command::Init { shell }) => {
             root_transition.ensure_unused("init")?;
             commands::init::run(&shell)?;

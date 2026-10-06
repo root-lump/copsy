@@ -29,6 +29,7 @@ fn shell_function() -> String {
     local -a launch_cmds=()
     local -a open_cmds=()
     local -a setup_dirs=()
+    local -a herdr_launches=()
     while IFS= read -r line; do
         if [[ "$line" == {{CD_MARKER}}* ]]; then
             cd_target="${line#{{CD_MARKER}}}"
@@ -36,6 +37,8 @@ fn shell_function() -> String {
             launch_cmds+=("${line#{{LAUNCH_MARKER}}}")
         elif [[ "$line" == {{OPEN_MARKER}}* ]]; then
             open_cmds+=("${line#{{OPEN_MARKER}}}")
+        elif [[ "$line" == {{HERDR_LAUNCH_MARKER}}* ]]; then
+            herdr_launches+=("${line#{{HERDR_LAUNCH_MARKER}}}")
         elif [[ "$line" == {{SETUP_MARKER}}* ]]; then
             setup_dirs+=("${line#{{SETUP_MARKER}}}")
         else
@@ -52,6 +55,13 @@ fn shell_function() -> String {
 
     if [[ -n "$cd_target" ]]; then
         cd "$cd_target" || return 1
+    fi
+
+    # Defer Herdr launches until setup succeeds; keep the JSON out of eval.
+    if (( ${#herdr_launches[@]} )); then
+        for request in "${herdr_launches[@]}"; do
+            command copsy herdr-launch "$request" || return $?
+        done
     fi
 
     # LAUNCH: case-dispatched for known tools (no eval for security)
@@ -83,6 +93,7 @@ fn shell_function() -> String {
     .replace("{{LAUNCH_MARKER}}", output::LAUNCH_MARKER)
     .replace("{{OPEN_MARKER}}", output::OPEN_MARKER)
     .replace("{{SETUP_MARKER}}", output::SETUP_MARKER)
+    .replace("{{HERDR_LAUNCH_MARKER}}", output::HERDR_LAUNCH_MARKER)
 }
 
 fn zsh_completion() -> &'static str {
@@ -127,12 +138,12 @@ _copsy() {
     local -a args
 
     args=(
-        '--herdr[Keep the caller in place and use Herdr workspaces]'
-        '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
-        '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
-        '--code[Open in VS Code]'
-        '--cursor[Open in Cursor]'
-        '--open=[Run a custom command after switching]:command:'
+        '--herdr[Keep the caller in place and launch tools in Herdr child tabs]'
+        '(-c --claude)'{-c,--claude}'[Launch Claude Code (in a child workspace tab with --herdr)]'
+        '(-x --codex)'{-x,--codex}'[Launch Codex (in a child workspace tab with --herdr)]'
+        '--code[Open VS Code (from a child workspace tab with --herdr)]'
+        '--cursor[Open Cursor (from a child workspace tab with --herdr)]'
+        '--open=[Run a custom command (in a child workspace tab with --herdr)]:command:'
         '(--no-carry)--carry[Carry uncommitted changes to the target worktree]'
         '(--carry)--no-carry[Do not carry uncommitted changes (overrides config)]'
         '(--no-setup)--setup[Run repository setup for the target worktree]'
@@ -168,14 +179,14 @@ _copsy() {
             ;;
         args)
             local -a herdr_flags
-            herdr_flags=('--herdr[Keep the caller in place and use Herdr workspaces]')
+            herdr_flags=('--herdr[Keep the caller in place and launch tools in Herdr child tabs]')
             local -a launch_flags
             launch_flags=(
-                '(-c --claude)'{-c,--claude}'[Launch claude after switching]'
-                '(-x --codex)'{-x,--codex}'[Launch codex after switching]'
-                '--code[Open in VS Code]'
-                '--cursor[Open in Cursor]'
-                '--open=[Run a custom command after switching]:command:'
+                '(-c --claude)'{-c,--claude}'[Launch Claude Code (in a child workspace tab with --herdr)]'
+                '(-x --codex)'{-x,--codex}'[Launch Codex (in a child workspace tab with --herdr)]'
+                '--code[Open VS Code (from a child workspace tab with --herdr)]'
+                '--cursor[Open Cursor (from a child workspace tab with --herdr)]'
+                '--open=[Run a custom command (in a child workspace tab with --herdr)]:command:'
             )
             local -a carry_flags
             carry_flags=(
@@ -386,7 +397,7 @@ mod tests {
         let zsh = zsh_completion();
         for subcommand in Cli::command().get_subcommands() {
             let name = subcommand.get_name();
-            if name == "help" {
+            if name == "help" || subcommand.is_hide_set() {
                 continue;
             }
             let about = subcommand.get_about().expect("subcommand needs an about");
@@ -421,7 +432,7 @@ mod tests {
     #[test]
     fn shell_initializes_marker_arrays_for_bash_nounset() {
         let shell = shell_function();
-        for array in ["launch_cmds", "open_cmds", "setup_dirs"] {
+        for array in ["launch_cmds", "open_cmds", "setup_dirs", "herdr_launches"] {
             assert!(shell.contains(&format!("local -a {array}=()")));
             assert!(shell.contains(&format!("if (( ${{#{array}[@]}} )); then")));
         }

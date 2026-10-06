@@ -42,7 +42,7 @@ pub fn run(name: Option<&str>, options: &TransitionOptions, herdr: bool) -> Resu
         || Ok(()),
     )?;
     if herdr {
-        herdr::open_workspace(&git::main_worktree_path()?, &target.path);
+        herdr::open_workspace(&git::main_worktree_path()?, &target.path, options.launch());
     }
     Ok(())
 }
