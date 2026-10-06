@@ -179,9 +179,11 @@ into an existing pane, which may already contain a running agent. If Herdr does
 not identify the workspace as newly opened, copsy also uses fresh tabs. Before
 using an initial pane, copsy checks that it still belongs to the workspace and
 has only a recognized foreground shell in the target directory, with no agent.
-If it is busy or cannot be verified, copsy uses a new tab. This check does not
-reserve the pane: shell builtins, pending input, and changes between the check
-and submission cannot be detected reliably. Focus stays unchanged.
+For a newly created pane, copsy waits up to 10 seconds for its shell to finish
+starting; if it does not settle, copsy uses a new tab. If the pane is busy or
+cannot be verified, copsy uses a new tab. This check does not reserve the pane:
+shell builtins, pending input, and changes between the check and submission
+cannot be detected reliably. Focus stays unchanged.
 VS Code and Cursor are launched from those tabs and open their usual external
 editor windows; their GUI is not embedded in Herdr.
 

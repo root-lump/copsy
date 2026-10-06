@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+// Shell startup took about 1-1.5 seconds in observed Herdr sessions. Polling
+// more frequently keeps the common case responsive, while ten seconds leaves
+// room for slower startup files without waiting indefinitely.
+const INITIAL_PANE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const INITIAL_PANE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+// Startup commands can leave the shell briefly alone between processes, so a
+// single ready observation is not enough to prove that startup has settled.
+const INITIAL_PANE_READY_OBSERVATIONS: u8 = 3;
 
 pub fn open_workspace(source: &Path, target: &Path, launch: &LaunchOptions) {
     if !inside_herdr() {
@@ -153,6 +163,12 @@ struct ForegroundProcess {
     cwd: Option<PathBuf>,
 }
 
+enum InitialPaneState {
+    Ready,
+    Starting,
+    Unavailable,
+}
+
 #[derive(Deserialize, Serialize)]
 struct LaunchRequest {
     workspace_id: String,
@@ -217,12 +233,9 @@ fn launch_in_tab(
 ) -> Result<()> {
     // Setup may have taken long enough for someone to start using the initial
     // pane. Registration-time ownership alone is no longer sufficient here.
-    let initial_pane = initial_pane.filter(|pane| match initial_pane_available(request, pane) {
+    let initial_pane = initial_pane.filter(|pane| match wait_for_initial_pane(request, pane) {
         Ok(true) => true,
-        Ok(false) => {
-            info!("Herdr initial pane is in use or could not be verified; using a new tab");
-            false
-        }
+        Ok(false) => false,
         Err(error) => {
             info!("Herdr initial pane could not be verified; using a new tab: {error:#}");
             false
@@ -243,7 +256,32 @@ fn launch_in_tab(
     Ok(())
 }
 
-fn initial_pane_available(request: &LaunchRequest, pane: &PaneIdentity) -> Result<bool> {
+fn wait_for_initial_pane(request: &LaunchRequest, pane: &PaneIdentity) -> Result<bool> {
+    let started_at = Instant::now();
+    let mut ready_observations = 0;
+    loop {
+        match initial_pane_state(request, pane)? {
+            InitialPaneState::Ready => {
+                ready_observations += 1;
+                if ready_observations == INITIAL_PANE_READY_OBSERVATIONS {
+                    return Ok(true);
+                }
+            }
+            InitialPaneState::Starting => ready_observations = 0,
+            InitialPaneState::Unavailable => {
+                info!("Herdr initial pane is in use or could not be verified; using a new tab");
+                return Ok(false);
+            }
+        }
+        if started_at.elapsed() >= INITIAL_PANE_WAIT_TIMEOUT {
+            info!("Herdr initial pane is still starting; using a new tab");
+            return Ok(false);
+        }
+        std::thread::sleep(INITIAL_PANE_POLL_INTERVAL);
+    }
+}
+
+fn initial_pane_state(request: &LaunchRequest, pane: &PaneIdentity) -> Result<InitialPaneState> {
     let output = run_herdr(
         Command::new("herdr").args(["pane", "get", &pane.pane_id]),
         "pane get",
@@ -255,7 +293,7 @@ fn initial_pane_available(request: &LaunchRequest, pane: &PaneIdentity) -> Resul
         || state.agent.is_some()
         || state.agent_session.is_some()
     {
-        return Ok(false);
+        return Ok(InitialPaneState::Unavailable);
     }
     let output = run_herdr(
         Command::new("herdr").args(["pane", "process-info", "--pane", &pane.pane_id]),
@@ -263,11 +301,23 @@ fn initial_pane_available(request: &LaunchRequest, pane: &PaneIdentity) -> Resul
     )?;
     let processes: ProcessResponse = serde_json::from_slice(&output.stdout)?;
     let processes = processes.result.process_info;
+    if processes.pane_id != pane.pane_id {
+        return Ok(InitialPaneState::Unavailable);
+    }
     let Some(shell_pid) = processes.shell_pid.filter(|pid| *pid != 0) else {
-        return Ok(false);
+        return Ok(InitialPaneState::Unavailable);
     };
-    let [process] = processes.foreground_processes.as_slice() else {
-        return Ok(false);
+    // Startup helpers remain in the shell's foreground process group, while
+    // job-controlled commands use a different group and mean the pane is busy.
+    if processes.foreground_process_group_id != Some(shell_pid) {
+        return Ok(InitialPaneState::Unavailable);
+    }
+    let Some(process) = processes
+        .foreground_processes
+        .iter()
+        .find(|process| process.pid == shell_pid)
+    else {
+        return Ok(InitialPaneState::Unavailable);
     };
     let name = process
         .name
@@ -302,11 +352,14 @@ fn initial_pane_available(request: &LaunchRequest, pane: &PaneIdentity) -> Resul
         .and_then(|path| path.canonicalize().ok())
         .zip(request.path.canonicalize().ok())
         .is_some_and(|(actual, target)| actual == target);
-    Ok(processes.pane_id == pane.pane_id
-        && processes.foreground_process_group_id == Some(shell_pid)
-        && process.pid == shell_pid
-        && known_shell
-        && same_directory)
+    if !known_shell || !same_directory {
+        return Ok(InitialPaneState::Unavailable);
+    }
+    if processes.foreground_processes.len() == 1 {
+        Ok(InitialPaneState::Ready)
+    } else {
+        Ok(InitialPaneState::Starting)
+    }
 }
 
 fn create_tab(request: &LaunchRequest, label: &str) -> Result<PaneIdentity> {
