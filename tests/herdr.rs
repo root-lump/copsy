@@ -130,7 +130,7 @@ fn install_mock_herdr(bin: &Path, fail: bool) {
 case "$1 $2" in
     'worktree open')
         printf '%s\n' "$@" > "$HERDR_TEST_LOG"
-        [ -f "$6/.git" ] || exit 9
+        [ -e "$6/.git" ] || exit 9
         printf '%s\n' "$HERDR_SOCKET_PATH" > "$HERDR_TEST_CONTEXT"
         if [ "$FAIL_REGISTRATION" = 1 ]; then
             printf 'server unavailable\n' >&2
@@ -139,7 +139,20 @@ case "$1 $2" in
         if [ "$HERDR_TEST_BAD_REGISTRATION" = 1 ]; then
             printf 'invalid json\n'
         else
-            printf '{"result":{"workspace":{"workspace_id":"w2"}}}\n'
+            already_open=false
+            if [ -f "$HERDR_TEST_LOG.workspaces" ] && grep -Fqx -- "$6" "$HERDR_TEST_LOG.workspaces"; then
+                already_open=true
+            else
+                printf '%s\n' "$6" >> "$HERDR_TEST_LOG.workspaces"
+                printf '%s' "$6" > "$HERDR_TEST_LOG.w2:p0"
+            fi
+            if [ "$HERDR_TEST_LEGACY_REGISTRATION" = 1 ]; then
+                printf '{"result":{"workspace":{"workspace_id":"w2"}}}\n'
+            else
+                workspace="${HERDR_TEST_INITIAL_WORKSPACE:-w2}"
+                pane="${HERDR_TEST_INITIAL_PANE-w2:p0}"
+                printf '{"result":{"workspace":{"workspace_id":"w2"},"already_open":%s,"root_pane":{"workspace_id":"%s","pane_id":"%s"}}}\n' "$already_open" "$workspace" "$pane"
+            fi
         fi
         ;;
     'tab create')
@@ -161,6 +174,41 @@ case "$1 $2" in
             workspace="${HERDR_TEST_WRONG_WORKSPACE:-w2}"
             printf '{"result":{"root_pane":{"workspace_id":"%s","pane_id":"w2:p%s"}}}\n' "$workspace" "$count"
         fi
+        ;;
+    'pane get')
+        if [ "$HERDR_TEST_INITIAL_STATE" = get_failure ]; then
+            printf 'pane unavailable\n' >&2
+            exit 1
+        fi
+        workspace=w2
+        agent=null
+        agent_session=null
+        [ "$HERDR_TEST_INITIAL_STATE" != moved ] || workspace=w7
+        [ "$HERDR_TEST_INITIAL_STATE" != agent ] || agent='"Claude Code"'
+        [ "$HERDR_TEST_INITIAL_STATE" != agent_session ] || agent_session='{}'
+        printf '{"result":{"pane":{"workspace_id":"%s","pane_id":"%s","agent":%s,"agent_session":%s}}}\n' "$workspace" "$3" "$agent" "$agent_session"
+        ;;
+    'pane process-info')
+        [ "$3" = --pane ] || exit 14
+        [ "$4" = w2:p0 ] || exit 15
+        if [ "$HERDR_TEST_INITIAL_STATE" = bad_json ]; then
+            printf 'invalid json\n'
+            exit 0
+        fi
+        cwd=$(cat "$HERDR_TEST_LOG.w2:p0")
+        shell_pid=100
+        pgid=100
+        pid=100
+        name=zsh
+        pane="$4"
+        case "$HERDR_TEST_INITIAL_STATE" in
+            busy) pgid=200; pid=200; name=vim ;;
+            exec_agent) name=claude ;;
+            unknown) shell_pid=null ;;
+            other_directory) cwd=/ ;;
+            wrong_pane) pane=w7:p0 ;;
+        esac
+        printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"%s","cwd":"%s"}]}}}\n' "$pane" "$shell_pid" "$pgid" "$pid" "$name" "$cwd"
         ;;
     'pane run')
         [ "$#" = 4 ] || exit 12
@@ -896,7 +944,7 @@ fn launch_request(output: &Output) -> String {
 
 #[cfg(unix)]
 #[test]
-fn herdr_launches_all_flags_in_distinct_child_tabs_and_reuses_no_panes() {
+fn herdr_uses_the_initial_pane_once_and_keeps_all_launchers_in_distinct_tabs() {
     let repo = Repository::new();
     let bin = repo.root.join("bin");
     install_mock_herdr(&bin, false);
@@ -940,7 +988,7 @@ fn herdr_launches_all_flags_in_distinct_child_tabs_and_reuses_no_panes() {
     let panes = fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap();
     assert_eq!(panes.lines().count(), 15);
     for (index, pane) in panes.lines().enumerate() {
-        assert_eq!(pane, format!("w2:p{}", index + 1));
+        assert_eq!(pane, format!("w2:p{index}"));
         assert_eq!(
             fs::read_to_string(repo.root.join(format!("herdr-call.{pane}"))).unwrap(),
             target.to_str().unwrap()
@@ -950,6 +998,10 @@ fn herdr_launches_all_flags_in_distinct_child_tabs_and_reuses_no_panes() {
             expected[index % 5]
         );
     }
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
+        "14"
+    );
 }
 
 #[cfg(unix)]
@@ -995,6 +1047,7 @@ fn malformed_or_wrong_workspace_tab_responses_submit_nothing() {
         let bin = repo.root.join("bin");
         install_mock_herdr(&bin, false);
         let output = mock_session_command(&repo, &repo.main, &bin)
+            .env("HERDR_TEST_LEGACY_REGISTRATION", "1")
             .args(["new", "feature", "--herdr", "--claude"])
             .output()
             .unwrap();
@@ -1021,6 +1074,7 @@ fn failed_launches_are_not_retried_and_other_tools_still_launch() {
         let bin = repo.root.join("bin");
         install_mock_herdr(&bin, false);
         let output = mock_session_command(&repo, &repo.main, &bin)
+            .env("HERDR_TEST_LEGACY_REGISTRATION", "1")
             .args(["new", "feature", "--herdr", "--claude", "--codex"])
             .output()
             .unwrap();
@@ -1098,6 +1152,7 @@ fn failed_setup_prevents_child_launches_in_bash_and_zsh() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(!repo.root.join("herdr-call.count").exists());
+        assert!(!repo.root.join("herdr-call.panes").exists());
         assert!(repo.default_worktree("feature").join(".git").exists());
     }
 }
@@ -1163,7 +1218,7 @@ fn interactive_selection_launches_in_new_and_reused_child_workspaces() {
     }
     assert_eq!(
         fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
-        "4"
+        "3"
     );
     fs::write(&fzf, "#!/bin/sh\ncat > /dev/null\nexit 130\n").unwrap();
     let output = mock_session_command(&repo, &repo.main, &bin)
@@ -1174,6 +1229,263 @@ fn interactive_selection_launches_in_new_and_reused_child_workspaces() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
-        "4"
+        "3"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn newly_opened_child_workspaces_launch_each_tool_without_an_extra_tab() {
+    for (flags, expected) in [
+        (vec!["--claude"], "claude"),
+        (vec!["--codex"], "codex"),
+        (vec!["--code"], "code -- ."),
+        (vec!["--cursor"], "cursor -- ."),
+        (vec!["--open", "echo custom"], "echo custom"),
+    ] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["new", "feature", "--herdr"])
+            .args(flags)
+            .output()
+            .unwrap();
+        let request = launch_request(&output);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["herdr-launch", &request])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+            "w2:p0\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.w2:p0.command")).unwrap(),
+            expected
+        );
+        assert!(!repo.root.join("herdr-call.count").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_interactive_claude_command_uses_initial_then_fresh_tabs_in_both_shells() {
+    use std::os::unix::fs::PermissionsExt;
+    for shell in ["bash", "zsh"] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        git(&repo.main, &["branch", "feat/interactive"]);
+        let fzf = bin.join("fzf");
+        fs::write(&fzf, "#!/bin/sh\nsed -n '2p'\n").unwrap();
+        fs::set_permissions(&fzf, fs::Permissions::from_mode(0o755)).unwrap();
+        let integration = repo.root.join("integration.sh");
+        fs::write(&integration, repo.run(&repo.main, &["init", shell]).stdout).unwrap();
+        let template = mock_session_command(&repo, &repo.main, &bin);
+        let mut command = Command::new(shell);
+        for (key, value) in template.get_envs() {
+            match value {
+                Some(value) => command.env(key, value),
+                None => command.env_remove(key),
+            };
+        }
+        let mut paths = vec![
+            bin,
+            Path::new(env!("CARGO_BIN_EXE_copsy"))
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let output = command
+            .current_dir(&repo.main)
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .args([
+                "-c",
+                "source \"$1\"; before=\"$PWD\"; copsy --herdr --claude || exit 10; copsy --herdr --claude || exit 11; [[ \"$PWD\" == \"$before\" ]]",
+                "shell-test",
+            ])
+            .arg(integration)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell}: {output:?}");
+        assert!(output.stdout.is_empty(), "{shell}: {output:?}");
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+            "w2:p0\nw2:p1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
+            "1"
+        );
+        for pane in ["w2:p0", "w2:p1"] {
+            assert_eq!(
+                fs::read_to_string(repo.root.join(format!("herdr-call.{pane}.command"))).unwrap(),
+                "claude"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unproven_initial_panes_and_the_parent_workspace_use_fresh_tabs() {
+    use std::os::unix::fs::PermissionsExt;
+    for scenario in ["legacy_response", "legacy_request", "parent"] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        let mut command = mock_session_command(&repo, &repo.main, &bin);
+        if scenario == "parent" {
+            let fzf = bin.join("fzf");
+            fs::write(&fzf, "#!/bin/sh\nsed -n '1p'\n").unwrap();
+            fs::set_permissions(&fzf, fs::Permissions::from_mode(0o755)).unwrap();
+            command.args(["--herdr", "--claude"]);
+        } else {
+            command.args(["new", "feature", "--herdr", "--claude"]);
+        }
+        if scenario == "legacy_response" {
+            command.env("HERDR_TEST_LEGACY_REGISTRATION", "1");
+        }
+        let output = command.output().unwrap();
+        let mut request: serde_json::Value =
+            serde_json::from_str(&launch_request(&output)).unwrap();
+        if scenario == "legacy_request" {
+            request.as_object_mut().unwrap().remove("initial_pane");
+        } else {
+            assert!(request.get("initial_pane").is_none());
+        }
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["herdr-launch", &request.to_string()])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{scenario}: {output:?}");
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+            "w2:p1\n"
+        );
+        assert!(!repo.root.join("herdr-call.w2:p0.command").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn invalid_initial_panes_never_receive_commands() {
+    for (key, value) in [
+        ("HERDR_TEST_INITIAL_WORKSPACE", "w7"),
+        ("HERDR_TEST_INITIAL_PANE", ""),
+        ("HERDR_TEST_INITIAL_PANE", "--current"),
+    ] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .env(key, value)
+            .args(["new", "feature", "--herdr", "--claude"])
+            .output()
+            .unwrap();
+        assert_target(&output, &repo.default_worktree("feature"), "feature");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("registration failed"));
+        assert!(!repo.root.join("herdr-call.panes").exists());
+        assert!(!repo.root.join("herdr-call.count").exists());
+    }
+
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "feature", "--herdr", "--claude"])
+        .output()
+        .unwrap();
+    let mut request: serde_json::Value = serde_json::from_str(&launch_request(&output)).unwrap();
+    request["initial_pane"]["workspace_id"] = "w7".into();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["herdr-launch", &request.to_string()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!repo.root.join("herdr-call.panes").exists());
+    assert!(!repo.root.join("herdr-call.count").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_initial_launch_is_not_retried_and_codex_gets_a_fresh_tab() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "feature", "--herdr", "--claude", "--codex"])
+        .output()
+        .unwrap();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .env("HERDR_TEST_FAIL_RUN", "claude")
+        .args(["herdr-launch", &launch_request(&output)])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+        "w2:p0\nw2:p1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.w2:p0.command")).unwrap(),
+        "claude"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.w2:p1.command")).unwrap(),
+        "codex"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
+        "1"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn initial_panes_that_become_busy_or_unverifiable_use_fresh_tabs() {
+    for state in [
+        "busy",
+        "exec_agent",
+        "unknown",
+        "other_directory",
+        "moved",
+        "agent",
+        "agent_session",
+        "get_failure",
+        "bad_json",
+        "wrong_pane",
+    ] {
+        let repo = Repository::new();
+        let bin = repo.root.join("bin");
+        install_mock_herdr(&bin, false);
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .args(["new", "feature", "--herdr", "--claude", "--codex"])
+            .output()
+            .unwrap();
+        let request = launch_request(&output);
+        // The initial pane was newly created at registration, but may have
+        // changed while setup ran before the shell dispatched this request.
+        let output = mock_session_command(&repo, &repo.main, &bin)
+            .env("HERDR_TEST_INITIAL_STATE", state)
+            .args(["herdr-launch", &request])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{state}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("using a new tab"));
+        assert!(!repo.root.join("herdr-call.w2:p0.command").exists());
+        assert_eq!(
+            fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+            "w2:p1\nw2:p2\n"
+        );
+        for (pane, tool) in [("w2:p1", "claude"), ("w2:p2", "codex")] {
+            assert_eq!(
+                fs::read_to_string(repo.root.join(format!("herdr-call.{pane}.command"))).unwrap(),
+                tool
+            );
+        }
+    }
 }
