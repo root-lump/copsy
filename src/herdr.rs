@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+// Shell startup took about 1-1.5 seconds in observed Herdr sessions. Polling
+// more frequently keeps the common case responsive, while ten seconds leaves
+// room for slower startup files without waiting indefinitely.
+const INITIAL_PANE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const INITIAL_PANE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+// Startup commands can leave the shell briefly alone between processes, so a
+// single ready observation is not enough to prove that startup has settled.
+const INITIAL_PANE_READY_OBSERVATIONS: u8 = 3;
 
 pub fn open_workspace(source: &Path, target: &Path, launch: &LaunchOptions) {
     if !inside_herdr() {
@@ -53,12 +63,23 @@ fn register_workspace(source: &Path, target: &Path, launch: &LaunchOptions) -> R
             .context("Invalid Herdr worktree open response; launch options were skipped")?;
         let workspace_id = response.result.workspace.workspace_id;
         validate_id(&workspace_id)?;
+        // Only a workspace created by this request has an unused initial pane.
+        // Older responses without an explicit freshness signal use new tabs.
+        let initial_pane = if response.result.already_open == Some(false) && source != target {
+            response.result.root_pane
+        } else {
+            None
+        };
+        if let Some(pane) = &initial_pane {
+            validate_pane(pane, &workspace_id)?;
+        }
         // Setup executes in the shell wrapper after this process exits. Deferring
         // launches ensures no agent starts before setup has completed successfully.
         let request = LaunchRequest {
             workspace_id,
             path: target.to_path_buf(),
             launch: launch.clone(),
+            initial_pane,
         };
         output::request_herdr_launch(&serde_json::to_string(&request)?);
     }
@@ -73,6 +94,8 @@ struct WorkspaceResponse {
 #[derive(Deserialize)]
 struct WorkspaceResult {
     workspace: WorkspaceIdentity,
+    already_open: Option<bool>,
+    root_pane: Option<PaneIdentity>,
 }
 
 #[derive(Deserialize)]
@@ -90,10 +113,60 @@ struct TabResult {
     root_pane: PaneIdentity,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct PaneIdentity {
     workspace_id: String,
     pane_id: String,
+}
+
+#[derive(Deserialize)]
+struct PaneResponse {
+    result: PaneResult,
+}
+
+#[derive(Deserialize)]
+struct PaneResult {
+    pane: PaneState,
+}
+
+#[derive(Deserialize)]
+struct PaneState {
+    #[serde(flatten)]
+    identity: PaneIdentity,
+    agent: Option<String>,
+    agent_session: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ProcessResponse {
+    result: ProcessResult,
+}
+
+#[derive(Deserialize)]
+struct ProcessResult {
+    process_info: PaneProcesses,
+}
+
+#[derive(Deserialize)]
+struct PaneProcesses {
+    pane_id: String,
+    shell_pid: Option<u32>,
+    foreground_process_group_id: Option<u32>,
+    #[serde(default)]
+    foreground_processes: Vec<ForegroundProcess>,
+}
+
+#[derive(Deserialize)]
+struct ForegroundProcess {
+    pid: u32,
+    name: String,
+    cwd: Option<PathBuf>,
+}
+
+enum InitialPaneState {
+    Ready,
+    Starting,
+    Unavailable,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -101,15 +174,21 @@ struct LaunchRequest {
     workspace_id: String,
     path: PathBuf,
     launch: LaunchOptions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial_pane: Option<PaneIdentity>,
 }
 
 pub fn launch_tools(request: &str) -> Result<()> {
     if !inside_herdr() {
         bail!("Herdr tool launches require running copsy inside Herdr");
     }
-    let request: LaunchRequest =
+    let mut request: LaunchRequest =
         serde_json::from_str(request).context("Invalid deferred Herdr launch request")?;
     validate_id(&request.workspace_id)?;
+    let mut initial_pane = request.initial_pane.take();
+    if let Some(pane) = &initial_pane {
+        validate_pane(pane, &request.workspace_id)?;
+    }
     let flags = &request.launch;
     let mut commands = Vec::new();
     if flags.code {
@@ -129,7 +208,9 @@ pub fn launch_tools(request: &str) -> Result<()> {
     }
     let mut failed = false;
     for (label, command) in commands {
-        if let Err(error) = launch_in_tab(&request, label, command) {
+        // Consume the initial pane even on failure: never submit another tool
+        // into a pane whose previous command may already have been delivered.
+        if let Err(error) = launch_in_tab(&request, label, command, initial_pane.take()) {
             // Other requested tools are independent; do not rerun successful
             // launches or fall back to the invoking terminal after a partial failure.
             info!("Warning: failed to launch {label} in Herdr: {error:#}");
@@ -144,9 +225,146 @@ pub fn launch_tools(request: &str) -> Result<()> {
     Ok(())
 }
 
-fn launch_in_tab(request: &LaunchRequest, label: &str, command: &str) -> Result<()> {
-    // Always allocate a fresh terminal, even for a reused workspace: its root
-    // pane may already contain an editor, agent, or unfinished command.
+fn launch_in_tab(
+    request: &LaunchRequest,
+    label: &str,
+    command: &str,
+    initial_pane: Option<PaneIdentity>,
+) -> Result<()> {
+    // Setup may have taken long enough for someone to start using the initial
+    // pane. Registration-time ownership alone is no longer sufficient here.
+    let initial_pane = initial_pane.filter(|pane| match wait_for_initial_pane(request, pane) {
+        Ok(true) => true,
+        Ok(false) => false,
+        Err(error) => {
+            info!("Herdr initial pane could not be verified; using a new tab: {error:#}");
+            false
+        }
+    });
+    let pane = if let Some(pane) = initial_pane {
+        pane
+    } else {
+        create_tab(request, label)?
+    };
+    // Both the initial pane and additional tabs start in the target checkout.
+    // Known tools use fixed commands; only --open contributes shell source.
+    run_herdr(
+        Command::new("herdr").args(["pane", "run", &pane.pane_id, command]),
+        "pane run",
+    )
+    .with_context(|| format!("Command submission to pane {} failed", pane.pane_id))?;
+    Ok(())
+}
+
+fn wait_for_initial_pane(request: &LaunchRequest, pane: &PaneIdentity) -> Result<bool> {
+    let started_at = Instant::now();
+    let mut ready_observations = 0;
+    loop {
+        match initial_pane_state(request, pane)? {
+            InitialPaneState::Ready => {
+                ready_observations += 1;
+                if ready_observations == INITIAL_PANE_READY_OBSERVATIONS {
+                    return Ok(true);
+                }
+            }
+            InitialPaneState::Starting => ready_observations = 0,
+            InitialPaneState::Unavailable => {
+                info!("Herdr initial pane is in use or could not be verified; using a new tab");
+                return Ok(false);
+            }
+        }
+        if started_at.elapsed() >= INITIAL_PANE_WAIT_TIMEOUT {
+            info!("Herdr initial pane is still starting; using a new tab");
+            return Ok(false);
+        }
+        std::thread::sleep(INITIAL_PANE_POLL_INTERVAL);
+    }
+}
+
+fn initial_pane_state(request: &LaunchRequest, pane: &PaneIdentity) -> Result<InitialPaneState> {
+    let output = run_herdr(
+        Command::new("herdr").args(["pane", "get", &pane.pane_id]),
+        "pane get",
+    )?;
+    let state: PaneResponse = serde_json::from_slice(&output.stdout)?;
+    let state = state.result.pane;
+    if state.identity.pane_id != pane.pane_id
+        || state.identity.workspace_id != request.workspace_id
+        || state.agent.is_some()
+        || state.agent_session.is_some()
+    {
+        return Ok(InitialPaneState::Unavailable);
+    }
+    let output = run_herdr(
+        Command::new("herdr").args(["pane", "process-info", "--pane", &pane.pane_id]),
+        "pane process-info",
+    )?;
+    let processes: ProcessResponse = serde_json::from_slice(&output.stdout)?;
+    let processes = processes.result.process_info;
+    if processes.pane_id != pane.pane_id {
+        return Ok(InitialPaneState::Unavailable);
+    }
+    let Some(shell_pid) = processes.shell_pid.filter(|pid| *pid != 0) else {
+        return Ok(InitialPaneState::Unavailable);
+    };
+    // Startup helpers remain in the shell's foreground process group, while
+    // job-controlled commands use a different group and mean the pane is busy.
+    if processes.foreground_process_group_id != Some(shell_pid) {
+        return Ok(InitialPaneState::Unavailable);
+    }
+    let Some(process) = processes
+        .foreground_processes
+        .iter()
+        .find(|process| process.pid == shell_pid)
+    else {
+        return Ok(InitialPaneState::Unavailable);
+    };
+    let name = process
+        .name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    let shell_name = name.strip_suffix(".exe").unwrap_or(&name);
+    // An agent started with exec can retain the shell PID, so check the live
+    // executable too. Unknown processes or unavailable cwd data are not safe.
+    let known_shell = matches!(
+        shell_name,
+        "sh" | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "ksh"
+            | "mksh"
+            | "csh"
+            | "tcsh"
+            | "elvish"
+            | "xonsh"
+            | "nu"
+            | "pwsh"
+            | "powershell"
+            | "cmd"
+    );
+    let same_directory = process
+        .cwd
+        .as_ref()
+        .and_then(|path| path.canonicalize().ok())
+        .zip(request.path.canonicalize().ok())
+        .is_some_and(|(actual, target)| actual == target);
+    if !known_shell || !same_directory {
+        return Ok(InitialPaneState::Unavailable);
+    }
+    if processes.foreground_processes.len() == 1 {
+        Ok(InitialPaneState::Ready)
+    } else {
+        Ok(InitialPaneState::Starting)
+    }
+}
+
+fn create_tab(request: &LaunchRequest, label: &str) -> Result<PaneIdentity> {
+    // Existing workspaces and additional tools need fresh terminals; their
+    // other panes may contain an editor, agent, or unfinished command.
     let output = run_herdr(
         Command::new("herdr")
             .args([
@@ -163,17 +381,15 @@ fn launch_in_tab(request: &LaunchRequest, label: &str, command: &str) -> Result<
     let response: TabResponse = serde_json::from_slice(&output.stdout)
         .context("Invalid Herdr tab create response; no command was submitted")?;
     let pane = response.result.root_pane;
+    validate_pane(&pane, &request.workspace_id)?;
+    Ok(pane)
+}
+
+fn validate_pane(pane: &PaneIdentity, workspace_id: &str) -> Result<()> {
     validate_id(&pane.pane_id)?;
-    if pane.workspace_id != request.workspace_id {
+    if pane.workspace_id != workspace_id {
         bail!("Herdr returned a pane outside the requested workspace; no command was submitted");
     }
-    // The tab's explicit cwd avoids shell-specific path quoting. Known tools use
-    // fixed commands; only --open contributes user-provided shell source.
-    run_herdr(
-        Command::new("herdr").args(["pane", "run", &pane.pane_id, command]),
-        "pane run",
-    )
-    .with_context(|| format!("Command submission to pane {} failed", pane.pane_id))?;
     Ok(())
 }
 
