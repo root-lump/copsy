@@ -169,10 +169,21 @@ trust automatically.
 `switch --herdr` and interactive selection also keep the caller in place and
 register the selected checkout. Combine `--herdr` with `--claude`, `--codex`,
 `--code`, `--cursor`, or `--open CMD`: after setup succeeds, each selected tool
-gets a separate labeled tab inside the registered child workspace, using the
-target checkout as its working directory. Multiple AI tools start independently.
-Reusing a workspace creates fresh tabs instead of sending commands into an
-existing pane, which may already contain a running agent. Focus stays unchanged.
+gets a separate tab inside the registered child workspace, using the target
+checkout as its working directory. When Herdr creates the child workspace, the
+first tool uses its initial tab; additional tools get new labeled tabs. The launch
+order is VS Code, Cursor, Claude Code, Codex, then the custom command, so
+`--claude --codex` starts Claude in the initial tab and Codex in a second tab.
+Reusing an existing workspace creates fresh tabs instead of sending commands
+into an existing pane, which may already contain a running agent. If Herdr does
+not identify the workspace as newly opened, copsy also uses fresh tabs. Before
+using an initial pane, copsy checks that it still belongs to the workspace and
+has only a recognized foreground shell in the target directory, with no agent.
+For a newly created pane, copsy waits up to 10 seconds for its shell to finish
+starting; if it does not settle, copsy uses a new tab. If the pane is busy or
+cannot be verified, copsy uses a new tab. This check does not reserve the pane:
+shell builtins, pending input, and changes between the check and submission
+cannot be detected reliably. Focus stays unchanged.
 VS Code and Cursor are launched from those tabs and open their usual external
 editor windows; their GUI is not embedded in Herdr.
 
