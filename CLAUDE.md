@@ -25,12 +25,15 @@ cargo test
 
 - `src/main.rs` — Entry point, dispatches to command handlers
 - `src/cli.rs` — clap derive definitions
-- `src/git.rs` — Git/gh command wrappers
+- `src/git/` — Shared Git subprocess wrappers, with repository, remote, worktree, carry, and PR modules
 - `src/config.rs` — Global and repository configuration loading and resolution
 - `src/repository_path.rs` — Validated repository-relative paths used by setup copies
 - `src/output.rs` — Marker protocol (`__COPSY_CD__`, `__COPSY_LAUNCH__`, `__COPSY_OPEN__`, `__COPSY_SETUP__`, `__COPSY_HERDR_LAUNCH__`) for shell function communication
 - `src/launcher.rs` — Emits launch markers for editors/AI tools
+- `src/herdr/` — Herdr path/config compatibility and session registration/deferred launches
 - `src/commands/` — One file per subcommand
+- `src/shell/` — Shell wrapper template and Bash/Zsh completions embedded by `commands/init.rs`
+- `tests/support/` — Isolated Git repository fixtures shared by CLI integration tests
 
 ## Key design decisions
 
@@ -44,7 +47,7 @@ cargo test
 
 - Code comments explain **why**, not what. Add a comment when the reason would surprise a reader: a hidden constraint, a workaround for a specific tool/library behavior, or an invariant the code alone doesn't convey. When touching code that lacks such comments, add them proactively. Do not reference tasks, PRs, or callers — those belong in commit messages
 - When adding or changing CLI options, always update the `--help` description text in the clap `#[arg]` or `#[command]` attributes
-- When adding or changing CLI options, always update the zsh/bash completion definitions in `src/commands/init.rs` — including top-level flags and per-subcommand flags as appropriate
+- When adding or changing CLI options, always update `src/shell/completion.zsh` and `src/shell/completion.bash` — including top-level flags and per-subcommand flags as appropriate
 - Only markers (`__COPSY_*`) may be written to stdout. All user-facing messages must use the `info!` macro (stderr)
 - Use `use` declarations for external module references instead of inline `crate::foo`
 - Interactive dialogs (`FuzzySelect`, etc.) must use `interact_opt()` so Esc cancels the dialog
