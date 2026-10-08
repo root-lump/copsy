@@ -2,6 +2,7 @@ use crate::cli::TransitionOptions;
 use crate::commands::add;
 use crate::commands::worktree::CreationKind;
 use crate::git;
+use crate::spinner;
 use crate::theme;
 use anyhow::Result;
 
@@ -18,21 +19,21 @@ pub fn run(target: Option<&str>, options: &TransitionOptions, herdr: bool) -> Re
 }
 
 fn select_pr_interactive() -> Result<Option<String>> {
-    let prs = crate::spinner::with_spinner("Fetching pull requests...", git::list_prs)?;
+    let prs = spinner::with_spinner("Fetching pull requests...", git::list_prs)?;
     if prs.is_empty() {
         anyhow::bail!("No open pull requests found");
     }
 
     let items: Vec<String> = prs
         .iter()
-        .map(|(num, title, branch)| format!("#{num} {title} ({branch})"))
+        .map(|pr| format!("#{} {} ({})", pr.number, pr.title, pr.branch))
         .collect();
 
     let Some(selection) = theme::fuzzy_select(&items, "Select a pull request")? else {
         return Ok(None);
     };
 
-    let (num, _, branch) = &prs[selection];
-    git::fetch_pr_branch(num, branch)?;
-    Ok(Some(branch.clone()))
+    let pr = &prs[selection];
+    git::fetch_pr_branch(&pr.number, &pr.branch)?;
+    Ok(Some(pr.branch.clone()))
 }
