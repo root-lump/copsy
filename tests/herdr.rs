@@ -201,14 +201,23 @@ case "$1 $2" in
         pid=100
         name=zsh
         pane="$4"
+        extra_process=
         case "$HERDR_TEST_INITIAL_STATE" in
             busy) pgid=200; pid=200; name=vim ;;
             exec_agent) name=claude ;;
             unknown) shell_pid=null ;;
             other_directory) cwd=/ ;;
             wrong_pane) pane=w7:p0 ;;
+            starting)
+                count=0
+                [ ! -f "$HERDR_TEST_LOG.process-info.count" ] || count=$(cat "$HERDR_TEST_LOG.process-info.count")
+                count=$((count + 1))
+                printf '%s' "$count" > "$HERDR_TEST_LOG.process-info.count"
+                [ "$count" -gt 3 ] || extra_process=',{"pid":300,"name":"path_helper","cwd":"'"$cwd"'"}'
+                ;;
+            never_settles) extra_process=',{"pid":300,"name":"path_helper","cwd":"'"$cwd"'"}' ;;
         esac
-        printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"%s","cwd":"%s"}]}}}\n' "$pane" "$shell_pid" "$pgid" "$pid" "$name" "$cwd"
+        printf '{"result":{"process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"%s","cwd":"%s"}%s]}}}\n' "$pane" "$shell_pid" "$pgid" "$pid" "$name" "$cwd" "$extra_process"
         ;;
     'pane run')
         [ "$#" = 4 ] || exit 12
@@ -1442,6 +1451,65 @@ fn failed_initial_launch_is_not_retried_and_codex_gets_a_fresh_tab() {
         fs::read_to_string(repo.root.join("herdr-call.count")).unwrap(),
         "1"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn starting_initial_panes_are_awaited_before_launch() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "feature", "--herdr", "--claude", "--codex"])
+        .output()
+        .unwrap();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .env("HERDR_TEST_INITIAL_STATE", "starting")
+        .args(["herdr-launch", &launch_request(&output)])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("using a new tab"));
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+        "w2:p0\nw2:p1\n"
+    );
+    for (pane, tool) in [("w2:p0", "claude"), ("w2:p1", "codex")] {
+        assert_eq!(
+            fs::read_to_string(repo.root.join(format!("herdr-call.{pane}.command"))).unwrap(),
+            tool
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn initial_panes_that_never_finish_starting_use_fresh_tabs() {
+    let repo = Repository::new();
+    let bin = repo.root.join("bin");
+    install_mock_herdr(&bin, false);
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .args(["new", "feature", "--herdr", "--claude", "--codex"])
+        .output()
+        .unwrap();
+    let output = mock_session_command(&repo, &repo.main, &bin)
+        .env("HERDR_TEST_INITIAL_STATE", "never_settles")
+        .args(["herdr-launch", &launch_request(&output)])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("using a new tab"));
+    assert!(!repo.root.join("herdr-call.w2:p0.command").exists());
+    assert_eq!(
+        fs::read_to_string(repo.root.join("herdr-call.panes")).unwrap(),
+        "w2:p1\nw2:p2\n"
+    );
+    for (pane, tool) in [("w2:p1", "claude"), ("w2:p2", "codex")] {
+        assert_eq!(
+            fs::read_to_string(repo.root.join(format!("herdr-call.{pane}.command"))).unwrap(),
+            tool
+        );
+    }
 }
 
 #[cfg(unix)]
